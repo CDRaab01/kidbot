@@ -1,0 +1,32 @@
+# Model files — too large for GitHub (download separately)
+server/models/*.gguf
+server/models/*.onnx
+server/models/*.bin
+
+# Temp audio
+server/temp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Test output
+test_response.mp3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

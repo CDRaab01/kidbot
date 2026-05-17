@@ -1,0 +1,5 @@
+# KidBot — Raspberry Pi Zero 2W dependencies
+RPi.GPIO>=0.7.1
+pyaudio>=0.2.14
+requests>=2.31.0
+# mpg123 must also be installed system-wide: sudo apt install mpg123
