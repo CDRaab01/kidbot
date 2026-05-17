@@ -22,7 +22,11 @@ CHILD_NAME = os.getenv("CHILD_NAME", "")  # set CHILD_NAME env var or edit here
 KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL", "server/models/kokoro-v1.0.onnx")
 KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES", "server/models/voices-v1.0.bin")
 KOKORO_VOICE = os.getenv("KOKORO_VOICE", "bm_lewis")   # bm_lewis = GB Lewis
-KOKORO_SPEED = float(os.getenv("KOKORO_SPEED", "1.2"))
+_raw_speed = os.getenv("KOKORO_SPEED", "1.2")
+try:
+    KOKORO_SPEED = float(_raw_speed)
+except ValueError:
+    raise ValueError(f"KOKORO_SPEED must be a number, got: {_raw_speed!r}")
 
 TEMP_DIR = Path("server/temp")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
