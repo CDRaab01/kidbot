@@ -40,11 +40,11 @@ class CooperBotGUI:
         self.root.resizable(True, True)
 
         self.state = "IDLE"
-        self._recording = False
         self._audio_frames: list[np.ndarray] = []
         self._ui_queue: queue.Queue = queue.Queue()
         self._input_devices: list[dict] = self._get_input_devices()
         self._selected_device_index: int | None = None
+        self._stream: sd.InputStream | None = None
 
         self._build_ui()
         self._bind_keys()
@@ -220,29 +220,30 @@ class CooperBotGUI:
     def _start_recording(self):
         self._set_state("RECORDING")
         self._audio_frames = []
-        self._recording = True
 
         device_name = sd.query_devices(self._selected_device_index)["name"]
         self._log("System", f"Recording via: {device_name}")
 
-        def capture():
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=1024,
-                device=self._selected_device_index,
-            ) as stream:
-                while self._recording:
-                    chunk, _ = stream.read(1024)
-                    self._audio_frames.append(chunk.copy())
-                    level = int(np.abs(chunk).mean() / 32768 * 150)
-                    self._ui_queue.put(("level", level))
+        def _audio_callback(indata, frames, time_info, status):
+            self._audio_frames.append(indata.copy())
+            level = int(np.abs(indata).mean() / 32768 * 150)
+            self._ui_queue.put(("level", level))
 
-        threading.Thread(target=capture, daemon=True).start()
+        self._stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=1024,
+            device=self._selected_device_index,
+            callback=_audio_callback,
+        )
+        self._stream.start()
 
     def _stop_recording_and_send(self):
-        self._recording = False
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
         self._set_state("PROCESSING")
 
         def process():
