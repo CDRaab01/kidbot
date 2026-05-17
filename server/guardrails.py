@@ -81,12 +81,22 @@ OUTPUT_BLOCKED_RESPONSE = (
 )
 
 
+_INPUT_PATTERN = re.compile(
+    r'\b(' + '|'.join(re.escape(kw) for kw in sorted(BLOCKED_INPUT_KEYWORDS, key=len, reverse=True)) + r')\b',
+    re.IGNORECASE,
+)
+
+_OUTPUT_PATTERN = re.compile(
+    r'\b(' + '|'.join(re.escape(kw) for kw in sorted(BLOCKED_OUTPUT_KEYWORDS, key=len, reverse=True)) + r')\b',
+    re.IGNORECASE,
+)
+
+
 def is_input_safe(text: str) -> bool:
     """Check child's speech before sending to LLM."""
-    words = set(text.lower().split())
-    blocked = words & BLOCKED_INPUT_KEYWORDS
-    if blocked:
-        logger.warning("Input blocked — matched keywords: %s", blocked)
+    m = _INPUT_PATTERN.search(text)
+    if m:
+        logger.warning("Input blocked — matched keyword: %r", m.group())
         return False
     return True
 
@@ -96,16 +106,13 @@ def is_output_safe(text: str) -> tuple[bool, str]:
     Check LLM reply before sending to TTS.
     Returns (is_safe, reason).
     """
-    lower = text.lower()
-
     # Keyword check
-    words = set(lower.split())
-    blocked = words & BLOCKED_OUTPUT_KEYWORDS
-    if blocked:
-        return False, f"blocked keywords in output: {blocked}"
+    m = _OUTPUT_PATTERN.search(text)
+    if m:
+        return False, f"blocked keyword in output: {m.group()!r}"
 
     # Personal info solicitation check
-    match = _PERSONAL_INFO_PATTERNS.search(lower)
+    match = _PERSONAL_INFO_PATTERNS.search(text)
     if match:
         return False, f"personal info pattern: {match.group()!r}"
 

@@ -4,7 +4,7 @@ import tempfile
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from .config import SERVER_HOST, SERVER_PORT, TEMP_DIR
 from .llm import LLMInterface
@@ -51,6 +51,8 @@ def _safe_header(text: str) -> str:
 
 def _mp3_response(reply_text: str, transcription: str = "") -> Response:
     """Synthesise reply and return MP3 with conversation text in headers."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
     mp3 = _tts.synthesize(reply_text)
     return Response(
         content=mp3,
@@ -64,6 +66,8 @@ def _mp3_response(reply_text: str, transcription: str = "") -> Response:
 
 def _process_text(text: str, session_id: str) -> Response:
     """Shared pipeline: text -> LLM -> TTS -> MP3 response."""
+    if _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
     history = _sessions.get_history(session_id)
     reply_text = _llm.respond(text, history=history)
     logger.info("[%s] CooperBot says: %r", session_id, reply_text)
@@ -73,7 +77,11 @@ def _process_text(text: str, session_id: str) -> Response:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    ready = _stt is not None and _llm is not None and _tts is not None
+    return JSONResponse(
+        {"status": "ok" if ready else "loading"},
+        status_code=200 if ready else 503,
+    )
 
 
 @app.post("/speak")
@@ -93,6 +101,8 @@ async def chat(
     Voice pipeline: WAV -> STT -> LLM -> TTS -> MP3.
     Response headers include X-Transcription and X-Reply for the GUI.
     """
+    if _stt is None or _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
     audio_data = await audio.read()
     if not audio_data:
         raise HTTPException(status_code=400, detail="Empty audio file")

@@ -37,7 +37,13 @@ class LLMInterface:
             },
         )
 
-        reply = response["message"]["content"].strip()
+        try:
+            reply = response.message.content.strip()
+        except (AttributeError, KeyError, TypeError):
+            logger.error("Unexpected Ollama response format: %r", response)
+            return OUTPUT_BLOCKED_RESPONSE
+        if not reply:
+            return OUTPUT_BLOCKED_RESPONSE
 
         safe, reason = is_output_safe(reply)
         if not safe:

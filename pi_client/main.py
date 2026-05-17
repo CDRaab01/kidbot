@@ -2,6 +2,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 
 from .audio import AudioManager
@@ -19,21 +20,18 @@ button = PushToTalkButton()
 audio = AudioManager()
 client = ServerClient()
 
-_busy = False  # prevents overlapping sessions
+_busy_lock = threading.Lock()  # prevents overlapping sessions
 
 
 def on_press():
-    global _busy
-    if _busy:
+    if not _busy_lock.acquire(blocking=False):
         return
-    _busy = True
     logger.info("PTT pressed — recording...")
     button.led(True)
     audio.start_recording()
 
 
 def on_release():
-    global _busy
     logger.info("PTT released — processing...")
     button.led(False)
     button.blink(count=2, interval=0.15)
@@ -51,7 +49,7 @@ def on_release():
             button.blink(count=5, interval=0.1)  # rapid blink = error
     finally:
         os.unlink(wav_path)
-        _busy = False
+        _busy_lock.release()
 
 
 def shutdown(sig=None, _frame=None):
