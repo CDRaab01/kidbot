@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -8,17 +9,34 @@ import time
 from .audio import AudioManager
 from .button import PushToTalkButton
 from .client import ServerClient
-from .config import SERVER_URL
+from .config import LOG_FILE, SERVER_URL
+from .display import DisplayManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-)
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(message)s")
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    if LOG_FILE:
+        from pathlib import Path
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        rh = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5,
+        )
+        rh.setFormatter(fmt)
+        root.addHandler(rh)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 button = PushToTalkButton()
 audio = AudioManager()
 client = ServerClient()
+display = DisplayManager()
 
 _busy_lock = threading.Lock()  # prevents overlapping sessions
 
@@ -28,6 +46,7 @@ def on_press():
         return
     logger.info("PTT pressed — recording...")
     button.led(True)
+    display.set_state("LISTENING")
     audio.start_recording()
 
 
@@ -35,18 +54,35 @@ def on_release():
     logger.info("PTT released — processing...")
     button.led(False)
     button.blink(count=2, interval=0.15)
+    display.set_state("THINKING")
 
     wav_path = audio.stop_recording()
     try:
-        mp3_data = client.send_audio(wav_path)
-        if mp3_data:
-            logger.info("Playing KidBot response...")
+        chunk_iter = client.send_audio_stream(wav_path)
+        if chunk_iter is not None:
+            logger.info("Streaming KidBot response...")
             button.led(True)
-            audio.play_mp3(mp3_data)
+            display.set_state("SPEAKING")
+            audio.play_mp3_stream(chunk_iter)
             button.led(False)
+            # Check if the LLM requested an image
+            image_url = client.get_latest_image()
+            if image_url:
+                logger.info("Showing image: %s", image_url)
+                display.show_image_url(image_url)
+            else:
+                display.set_state("HAPPY")
+                time.sleep(1.5)
+                display.set_state("IDLE")
         else:
-            logger.warning("No response received from server.")
-            button.blink(count=5, interval=0.1)  # rapid blink = error
+            logger.warning("No response from server — playing fallback clip.")
+            display.set_state("ERROR")
+            button.blink(count=5, interval=0.1)
+            fallback = client.offline_audio or client.error_audio
+            if fallback:
+                audio.play_mp3(fallback)
+            time.sleep(2)
+            display.set_state("IDLE")
     finally:
         os.unlink(wav_path)
         _busy_lock.release()
@@ -54,6 +90,7 @@ def on_release():
 
 def shutdown(sig=None, _frame=None):
     logger.info("Shutting down KidBot.")
+    display.cleanup()
     button.cleanup()
     audio.cleanup()
     sys.exit(0)
@@ -74,6 +111,7 @@ def main():
     button.on_press(on_press)
     button.on_release(on_release)
 
+    display.set_state("IDLE")
     button.blink(count=3, interval=0.3)  # three slow blinks = ready
     logger.info("Ready. Hold the button to talk.")
 

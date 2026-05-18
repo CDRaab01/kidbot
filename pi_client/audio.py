@@ -83,5 +83,21 @@ class AudioManager:
         finally:
             os.unlink(path)
 
+    def play_mp3_stream(self, chunks) -> None:
+        """Pipe a streaming MP3 chunk iterator to mpg123 via stdin for low-latency playback."""
+        proc = subprocess.Popen(
+            ["mpg123", "-q", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            for chunk in chunks:
+                proc.stdin.write(chunk)
+            proc.stdin.close()
+            proc.wait()
+        except (BrokenPipeError, OSError):
+            proc.kill()
+
     def cleanup(self):
         self._pa.terminate()

@@ -15,6 +15,7 @@ SESSION_TIMEOUT = 1800  # drop idle sessions after 30 minutes
 class Session:
     messages: list = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
+    latest_image_url: str = ""
 
 
 class SessionStore:
@@ -106,6 +107,18 @@ class SessionStore:
             session.messages = session.messages[-(MAX_TURNS * 2):]
         if self._db_path:
             self._persist_session(session_id)
+
+    def set_latest_image(self, session_id: str, url: str) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.latest_image_url = url
+
+    def get_and_clear_latest_image(self, session_id: str) -> str:
+        s = self._sessions.get(session_id)
+        if not s:
+            return ""
+        url, s.latest_image_url = s.latest_image_url, ""
+        return url
 
     def clear(self, session_id: str):
         self._sessions.pop(session_id, None)

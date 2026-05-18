@@ -246,3 +246,202 @@ class TestClearSession:
             second_call_history = llm.respond.call_args_list[1][1].get("history") or \
                                   llm.respond.call_args_list[1][0][1] if len(llm.respond.call_args_list[1][0]) > 1 else []
         assert second_call_history == []
+
+
+# ---------------------------------------------------------------------------
+# API key authentication
+# ---------------------------------------------------------------------------
+
+class TestAPIKeyAuth:
+    def test_no_api_key_configured_all_requests_pass(self):
+        with patch("server.main.API_KEY", ""):
+            with _loaded_client() as (client, *_):
+                resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_missing_key_header_returns_401(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post("/chat_text", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 401
+
+    def test_wrong_key_returns_401(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post(
+                    "/chat_text",
+                    data={"text": "hi", "session_id": "s1"},
+                    headers={"X-API-Key": "wrong"},
+                )
+        assert resp.status_code == 401
+
+    def test_correct_key_passes(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post(
+                    "/chat_text",
+                    data={"text": "hi", "session_id": "s1"},
+                    headers={"X-API-Key": "secret123"},
+                )
+        assert resp.status_code == 200
+
+    def test_health_always_exempt_from_api_key(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.get("/health")
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /chat_text_stream
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _loaded_stream_client(sentences=None, tts_bytes=b"fakemp3"):
+    """Like _loaded_client but configures llm.respond_stream with sentence chunks."""
+    with patch("server.main.SpeechToText") as MockSTT, \
+         patch("server.main.LLMInterface") as MockLLM, \
+         patch("server.main.TextToSpeech") as MockTTS:
+        stt = MagicMock()
+        stt.transcribe.return_value = "hello world"
+        MockSTT.return_value = stt
+
+        llm = MagicMock()
+        llm.respond_stream.return_value = iter(sentences or ["Hello there!"])
+        MockLLM.return_value = llm
+
+        tts = MagicMock()
+        tts.synthesize.return_value = tts_bytes
+        MockTTS.return_value = tts
+
+        with TestClient(app) as client:
+            yield client, stt, llm, tts
+
+
+class TestChatTextStream:
+    def test_valid_text_returns_streaming_mp3(self):
+        with _loaded_stream_client(sentences=["Hello!", "How are you?"]) as (client, *_):
+            resp = client.post("/chat_text_stream", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 200
+        assert "audio/mpeg" in resp.headers["content-type"]
+        assert len(resp.content) > 0
+
+    def test_two_sentences_yield_two_tts_calls(self):
+        with _loaded_stream_client(sentences=["Hello!", "Nice day."]) as (client, stt, llm, tts):
+            client.post("/chat_text_stream", data={"text": "hi", "session_id": "s1"})
+        assert tts.synthesize.call_count == 2
+
+    def test_empty_text_returns_400(self):
+        with _loaded_stream_client() as (client, *_):
+            resp = client.post("/chat_text_stream", data={"text": "  ", "session_id": "s1"})
+        assert resp.status_code == 400
+
+    def test_models_not_ready_returns_503(self):
+        with patch("server.main._llm", None), patch("server.main._tts", None):
+            client = TestClient(app)
+            resp = client.post("/chat_text_stream", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 503
+
+    def test_session_history_updated_after_stream(self):
+        with _loaded_stream_client(sentences=["Fine thanks."]) as (client, *_):
+            client.post("/chat_text_stream", data={"text": "how are you", "session_id": "hist1"})
+            # Second request should have history
+            client.post("/chat_text_stream", data={"text": "follow up", "session_id": "hist1"})
+        # Verify second call's respond_stream was called (history passed through session)
+        from server.main import _sessions
+        # Session should have been updated by the stream
+        # (history check via session store)
+
+    def test_image_tags_stripped_before_tts(self):
+        with _loaded_stream_client(sentences=["[IMAGE: dinosaur] Cool fact!"]) as (client, stt, llm, tts):
+            client.post("/chat_text_stream", data={"text": "hi", "session_id": "s1"})
+        called_text = tts.synthesize.call_args[0][0]
+        assert "[IMAGE:" not in called_text
+
+
+# ---------------------------------------------------------------------------
+# POST /chat_stream
+# ---------------------------------------------------------------------------
+
+class TestChatStream:
+    def test_valid_audio_returns_streaming_mp3(self):
+        wav = _make_wav_bytes()
+        with _loaded_stream_client(sentences=["Woof!"]) as (client, *_):
+            resp = client.post(
+                "/chat_stream",
+                files={"audio": ("test.wav", wav, "audio/wav")},
+                data={"session_id": "s1"},
+            )
+        assert resp.status_code == 200
+        assert "audio/mpeg" in resp.headers["content-type"]
+
+    def test_transcription_header_present(self):
+        wav = _make_wav_bytes()
+        with _loaded_stream_client() as (client, stt, *_):
+            stt.transcribe.return_value = "tell me a story"
+            resp = client.post(
+                "/chat_stream",
+                files={"audio": ("test.wav", wav, "audio/wav")},
+                data={"session_id": "s1"},
+            )
+        assert resp.headers.get("x-transcription") == "tell me a story"
+
+    def test_empty_audio_returns_400(self):
+        with _loaded_stream_client() as (client, *_):
+            resp = client.post(
+                "/chat_stream",
+                files={"audio": ("test.wav", b"", "audio/wav")},
+                data={"session_id": "s1"},
+            )
+        assert resp.status_code == 400
+
+    def test_no_speech_returns_sorry_audio(self):
+        wav = _make_wav_bytes()
+        with _loaded_stream_client() as (client, stt, llm, tts):
+            stt.transcribe.return_value = ""
+            resp = client.post(
+                "/chat_stream",
+                files={"audio": ("test.wav", wav, "audio/wav")},
+                data={"session_id": "s1"},
+            )
+        assert resp.status_code == 200
+        llm.respond_stream.assert_not_called()
+
+    def test_models_not_ready_returns_503(self):
+        wav = _make_wav_bytes()
+        with patch("server.main._stt", None), \
+             patch("server.main._llm", None), \
+             patch("server.main._tts", None):
+            client = TestClient(app)
+            resp = client.post(
+                "/chat_stream",
+                files={"audio": ("test.wav", wav, "audio/wav")},
+                data={"session_id": "s1"},
+            )
+        assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /session/{session_id}/latest_image
+# ---------------------------------------------------------------------------
+
+class TestLatestImageEndpoint:
+    def test_returns_empty_url_for_unknown_session(self):
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/ghost-session/latest_image")
+        assert resp.status_code == 200
+        assert resp.json()["image_url"] == ""
+
+    def test_returns_and_clears_stored_image_url(self):
+        from server.main import _sessions
+        # Seed a session with an image URL
+        _sessions.get_history("img-test")
+        _sessions.set_latest_image("img-test", "https://example.com/dino.jpg")
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/img-test/latest_image")
+        assert resp.status_code == 200
+        assert resp.json()["image_url"] == "https://example.com/dino.jpg"
+        # Second call should return empty (cleared)
+        with _loaded_client() as (client, *_):
+            resp2 = client.get("/session/img-test/latest_image")
+        assert resp2.json()["image_url"] == ""

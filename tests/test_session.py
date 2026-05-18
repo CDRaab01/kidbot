@@ -126,3 +126,30 @@ class TestSQLiteSessionStore:
         store = SessionStore(db_path=None)
         store.add_exchange("s1", "hi", "hello")
         assert store._db_path is None
+
+
+class TestLatestImage:
+    def setup_method(self):
+        self.store = SessionStore()
+
+    def test_get_returns_empty_for_unknown_session(self):
+        assert self.store.get_and_clear_latest_image("nope") == ""
+
+    def test_set_then_get_returns_url(self):
+        self.store.get_history("s1")  # create session
+        self.store.set_latest_image("s1", "https://example.com/img.jpg")
+        url = self.store.get_and_clear_latest_image("s1")
+        assert url == "https://example.com/img.jpg"
+
+    def test_get_clears_after_first_call(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/img.jpg")
+        self.store.get_and_clear_latest_image("s1")
+        assert self.store.get_and_clear_latest_image("s1") == ""
+
+    def test_set_on_nonexistent_session_is_safe(self):
+        self.store.set_latest_image("ghost", "https://x.com/img.jpg")  # no session created
+
+    def test_default_latest_image_url_is_empty(self):
+        self.store.get_history("s1")
+        assert self.store.get_and_clear_latest_image("s1") == ""

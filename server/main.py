@@ -1,27 +1,46 @@
+import asyncio
 import logging
+import logging.handlers
 import os
 import re
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .config import PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR
+from .config import (API_KEY, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES,
+                     PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR)
 from .image_search import fetch_image_url
 from .llm import LLMInterface
 from .session import SessionStore
 from .stt import SpeechToText
 from .tts import TextToSpeech
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    if LOG_FILE:
+        from pathlib import Path
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        rh = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+        )
+        rh.setFormatter(fmt)
+        root.addHandler(rh)
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 _stt: SpeechToText | None = None
@@ -49,6 +68,15 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="CooperBot Server", version="0.4.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def _api_key_middleware(request: Request, call_next):
+    # /health is always exempt so the Pi can confirm connectivity before auth.
+    if API_KEY and request.url.path != "/health":
+        if request.headers.get("X-API-Key") != API_KEY:
+            return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
+    return await call_next(request)
 
 
 _IMAGE_TAG_RE = re.compile(r'\[IMAGE:\s*([^\]]+)\]', re.IGNORECASE)
@@ -211,6 +239,126 @@ async def clear_session(session_id: str):
     """Reset conversation history for a session."""
     _sessions.clear(session_id)
     return {"status": "cleared", "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Streaming endpoints — sentence-level TTS parallelism
+# ---------------------------------------------------------------------------
+
+async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, None]:
+    """
+    Async generator: yields one MP3 chunk per sentence.
+    LLM runs in a producer thread; TTS synthesises each sentence in the
+    thread pool as it arrives, so playback begins before the LLM finishes.
+    """
+    history = _sessions.get_history(session_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _producer():
+        try:
+            for sentence in _llm.respond_stream(text, history):
+                loop.call_soon_threadsafe(queue.put_nowait, ("s", sentence))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("err", str(exc)))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+    t = threading.Thread(target=_producer, daemon=True)
+    t.start()
+
+    full_parts: list[str] = []
+    image_term: str | None = None
+    while True:
+        kind, value = await queue.get()
+        if kind == "done":
+            break
+        if kind == "err":
+            logger.error("LLM stream error: %s", value)
+            break
+        m = _IMAGE_TAG_RE.search(value)
+        if m and image_term is None:
+            image_term = m.group(1).strip()
+        clean = _IMAGE_TAG_RE.sub("", value).strip()
+        if not clean:
+            continue
+        full_parts.append(clean)
+        mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        yield mp3
+
+    t.join()
+    if full_parts:
+        _sessions.add_exchange(session_id, text, " ".join(full_parts))
+    if image_term:
+        logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
+        asyncio.ensure_future(_fetch_and_store_image(session_id, image_term))
+
+
+async def _fetch_and_store_image(session_id: str, term: str) -> None:
+    url = await run_in_threadpool(fetch_image_url, term) or ""
+    if url:
+        _sessions.set_latest_image(session_id, url)
+        logger.info("[%s] Stored image URL for %r", session_id, term)
+
+
+@app.get("/session/{session_id}/latest_image")
+async def get_latest_image(session_id: str):
+    """One-shot: returns and clears the latest image URL for a session."""
+    return {"image_url": _sessions.get_and_clear_latest_image(session_id)}
+
+
+@app.post("/chat_text_stream")
+@limiter.limit("5/minute")
+async def chat_text_stream(
+    request: Request,
+    text: str = Form(...),
+    session_id: str = Form(default="default"),
+):
+    """Text → streaming LLM → sentence-by-sentence TTS → chunked MP3."""
+    if _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty text")
+    logger.info("[%s] Stream text input: %r", session_id, text)
+    return StreamingResponse(_sentence_stream(text, session_id), media_type="audio/mpeg")
+
+
+@app.post("/chat_stream")
+@limiter.limit("5/minute")
+async def chat_stream(
+    request: Request,
+    audio: UploadFile = File(...),
+    session_id: str = Form(default="default"),
+):
+    """WAV → STT → streaming LLM → sentence-by-sentence TTS → chunked MP3."""
+    if _stt is None or _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    audio_data = await audio.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=TEMP_DIR)
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(audio_data)
+        text = await run_in_threadpool(_stt.transcribe, tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+    if not text:
+        logger.info("[%s] Stream: no speech detected.", session_id)
+        mp3 = await run_in_threadpool(_tts.synthesize, SORRY_TRY_AGAIN)
+        return Response(content=mp3, media_type="audio/mpeg")
+
+    logger.info("[%s] Stream STT: %r", session_id, text)
+    return StreamingResponse(
+        _sentence_stream(text, session_id),
+        media_type="audio/mpeg",
+        headers={"X-Transcription": _safe_header(text)},
+    )
 
 
 if __name__ == "__main__":
