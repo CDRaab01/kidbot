@@ -1,6 +1,6 @@
 # KidBot — System Manual
 
-**Version:** 0.4  
+**Version:** 0.5  
 **Audience:** System operators, parents, and anyone setting up or maintaining a KidBot deployment
 
 ---
@@ -473,8 +473,8 @@ Raspberry Pi Zero 2W — 40-pin header
   SCLK [23] [24] CE0    ← SPI0 SCLK / CE0
   GND  [25] [26] CE1
   ID_SD[27] [28] ID_SC
-  GP5  [29] [30] GND
-  GP6  [31] [32] GP12
+  GP5  [29] [30] GND    ← VOL_UP_PIN   (29 = GPIO 5)  ▲
+  GP6  [31] [32] GP12   ← VOL_DOWN_PIN (31 = GPIO 6)  ▼
   GP13 [33] [34] GND
   GP19 [35] [36] GP16
   GP26 [37] [38] GP20
@@ -489,6 +489,9 @@ Raspberry Pi Zero 2W — 40-pin header
     DIN → MOSI (pin 19)
     GND → GND  (pin 25)
     VCC → 3V3  (pin 17)
+
+▲▼ Volume rocker — each side connects its GPIO pin to GND when pressed.
+   Internal pull-ups are enabled in software (active-low).
 
 ⚠ RST conflict: DISPLAY_RST defaults to None (no hardware reset).
   If you want hardware reset, use a GPIO pin that is NOT 27 (LED).
@@ -510,6 +513,25 @@ Internal pull-up is enabled in software. Button is active-low (pressing connects
 GPIO 27 (pin 13) ──[ 220 Ω ]──┤ LED anode ├──┤ LED cathode ├── GND
 ```
 
+### Volume Rocker Wiring
+
+```
+GPIO 5 (pin 29) ──┤ Vol ▲ side ├── GND (pin 30)
+GPIO 6 (pin 31) ──┤ Vol ▼ side ├── GND (pin 30 or 34)
+```
+
+A standard 3-pin rocker / SPST momentary switch works. Internal pull-ups are enabled; each side fires a FALLING-edge interrupt when pressed. Bouncetime is 150 ms.
+
+When volume changes, a cyan progress bar overlays the bottom of the LCD for 2 seconds, showing the new level.
+
+Override the default GPIO pins or ALSA control via environment variables:
+```bash
+export VOL_UP_PIN=5        # BCM number of "volume up" button
+export VOL_DOWN_PIN=6      # BCM number of "volume down" button
+export VOL_STEP=5          # percent change per press (default 5)
+export ALSA_CONTROL=Master # amixer control name (default "Master")
+```
+
 ### ReSpeaker 2-Mic HAT
 
 The HAT plugs directly into the 40-pin header. It provides:
@@ -517,7 +539,7 @@ The HAT plugs directly into the 40-pin header. It provides:
 - 3.5 mm stereo output jack
 - RGB LED ring (not used by KidBot)
 
-The HAT occupies most of the header. The push button and LED connect to the remaining exposed pins (17, 27, GND).
+The HAT occupies most of the header. The push button and LED connect to the remaining exposed pins (17, 27, GND). The volume rocker connects to the free pins 29/31 (GPIO 5/6).
 
 > **The Waveshare display also connects via SPI on the same header.** This is compatible because the HAT routes through the SPI pins and exposes them.
 
@@ -725,6 +747,26 @@ d.cleanup()
 "
 ```
 
+### Volume rocker not changing volume
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| Pressing rocker has no effect | `ALSA_CONTROL` name wrong | Run `amixer scontrols` to list names; set `ALSA_CONTROL=<name>` |
+| Logs show "Could not read ALSA volume" | amixer not installed | `sudo apt install alsa-utils` |
+| Volume changes but bar not visible | Display not initialised | Check SPI is enabled and luma.lcd installed |
+| Button fires multiple times per press | Mechanical bounce | Increase `VOL_STEP` env var or add hardware debounce cap |
+
+```bash
+# List available ALSA controls
+amixer scontrols
+
+# Test volume read manually
+amixer sget Master
+
+# Test volume set manually
+amixer sset Master 60%
+```
+
 ### Audio playback silence / distortion
 
 ```bash
@@ -811,4 +853,4 @@ cd /path/to/kidbot
 python -m pytest tests/ -v --tb=short
 ```
 
-All 138 tests should pass before deploying.
+All 168 tests should pass before deploying.
