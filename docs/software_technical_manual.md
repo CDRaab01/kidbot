@@ -1,6 +1,6 @@
 # KidBot — Software Technical Manual
 
-**Version:** 0.4  
+**Version:** 0.5  
 **Audience:** Developers maintaining or extending the KidBot codebase
 
 ---
@@ -23,8 +23,9 @@
    - 4.2 [Server Client](#42-server-client)
    - 4.3 [Audio Manager](#43-audio-manager)
    - 4.4 [Button Handler](#44-button-handler)
-   - 4.5 [Display Manager](#45-display-manager)
-   - 4.6 [Configuration](#46-pi-client-configuration)
+   - 4.5 [Volume Rocker](#45-volume-rocker)
+   - 4.6 [Display Manager](#46-display-manager)
+   - 4.7 [Configuration](#47-pi-client-configuration)
 5. [Request & Data Flows](#5-request--data-flows)
    - 5.1 [Non-Streaming Voice Pipeline](#51-non-streaming-voice-pipeline)
    - 5.2 [Streaming Voice Pipeline](#52-streaming-voice-pipeline)
@@ -64,6 +65,7 @@ kidbot/
 │   ├── client.py               # HTTP client (requests + retry)
 │   ├── audio.py                # PyAudio recording + mpg123 playback
 │   ├── button.py               # GPIO push-to-talk + LED
+│   ├── volume.py               # GPIO volume rocker + ALSA control
 │   ├── display.py              # ILI9341 LCD face animation
 │   └── config.py               # Pi-side config / env vars
 │
@@ -83,6 +85,8 @@ kidbot/
 │   ├── test_stt.py
 │   ├── test_tts.py
 │   ├── test_image_search.py
+│   ├── test_volume.py
+│   ├── test_display_volume.py
 │   └── test_gui_logic.py
 │
 └── .github/workflows/
@@ -123,6 +127,11 @@ kidbot/
 ║  ┌─────────────────────┐  ║  │         image_search.py             │ ║
 ║  │  PushToTalkButton   │  ║  │         Wikipedia API               │ ║
 ║  │  RPi.GPIO           │  ║  └─────────────────────────────────────┘ ║
+║  └─────────────────────┘  ║                                          ║
+║                           ║                                          ║
+║  ┌─────────────────────┐  ║                                          ║
+║  │  VolumeRocker       │  ║                                          ║
+║  │  RPi.GPIO + amixer  │  ║                                          ║
 ║  └─────────────────────┘  ║                                          ║
 ╚═══════════════════════════╩══════════════════════════════════════════╝
 
@@ -481,6 +490,7 @@ main()
   ├── audio  = AudioManager()
   ├── client = ServerClient()
   ├── display = DisplayManager()
+  ├── volume_rocker = VolumeRocker(on_change=display.show_volume)
   │
   ├── ping server
   │     ├── success → prefetch_audio() + display.set_state("IDLE")
@@ -638,12 +648,62 @@ PushToTalkButton
   ├── blink(count, interval)
   │     └── loop: led(on) → sleep → led(off) → sleep
   │
-  └── cleanup() → GPIO.cleanup()
+  └── cleanup() → GPIO.remove_event_detect(BUTTON_PIN)
+                  (global GPIO.cleanup() is called by main.shutdown())
 ```
 
 ---
 
-### 4.5 Display Manager
+### 4.5 Volume Rocker
+
+**File:** `pi_client/volume.py`
+
+```
+GPIO layout (BCM numbering):
+  Pin 5  ──── VOL_UP   (IN, pull-up, active-low)
+  Pin 6  ──── VOL_DOWN (IN, pull-up, active-low)
+
+VolumeRocker(on_change=None)
+  │
+  ├── GPIO.setup(VOL_UP_PIN/VOL_DOWN_PIN, IN, pull_up_down=PUD_UP)
+  ├── GPIO.add_event_detect(FALLING, bouncetime=150)
+  │
+  ├── _on_up(channel)   → daemon thread: _adjust(+VOL_STEP)
+  ├── _on_down(channel) → daemon thread: _adjust(-VOL_STEP)
+  │
+  ├── _adjust(delta)
+  │     ├── _get_volume(ALSA_CONTROL)  → amixer sget → regex [(\d+)%]
+  │     ├── new_pct = clamp(current + delta, VOL_MIN, VOL_MAX)
+  │     ├── if no change → return  (no display flash at limit)
+  │     ├── _set_volume(new_pct)  → amixer sset Master X%
+  │     └── on_change(new_pct)   → display.show_volume()
+  │
+  └── cleanup() → GPIO.remove_event_detect(VOL_UP_PIN/VOL_DOWN_PIN)
+
+Volume overlay:
+  DisplayManager.show_volume(pct)
+    └── sets _vol_pct, _vol_expiry = now + 2 s
+  _animate() reads _vol_pct and draws:
+    _draw_volume_overlay(draw, pct)
+      └── bottom-centre bar 180×18 px
+          cyan fill proportional to pct
+          auto-clears after 2 s
+```
+
+**ALSA control name** defaults to `"Master"`. If your hardware uses a different name (e.g. ReSpeaker uses `"Master"` too, but some HATs differ), set `ALSA_CONTROL=<name>`. Run `amixer scontrols` to list available names.
+
+**Shutdown ordering** in `main.py`:
+```
+display.cleanup()          # stop render thread
+volume_rocker.cleanup()    # remove_event_detect on GPIO 5, 6
+button.cleanup()           # remove_event_detect on GPIO 17
+GPIO.cleanup()             # single global cleanup at end
+audio.cleanup()
+```
+
+---
+
+### 4.6 Display Manager
 
 **File:** `pi_client/display.py`  
 **Library:** `luma.lcd` (ILI9341 SPI driver) + `Pillow`
@@ -730,7 +790,7 @@ show_image_url(url)
 
 ---
 
-### 4.6 Pi Client Configuration
+### 4.7 Pi Client Configuration
 
 **File:** `pi_client/config.py`
 
@@ -749,6 +809,12 @@ show_image_url(url)
 | `DISPLAY_SPI_PORT` | `0` | `DISPLAY_SPI_PORT` |
 | `DISPLAY_RST` | `None` | `DISPLAY_RST` |
 | `IMAGE_DISPLAY_SECONDS` | `8` | `IMAGE_DISPLAY_SECONDS` |
+| `VOL_UP_PIN` | `5` | `VOL_UP_PIN` |
+| `VOL_DOWN_PIN` | `6` | `VOL_DOWN_PIN` |
+| `VOL_STEP` | `5` | `VOL_STEP` |
+| `VOL_MIN` | `0` | `VOL_MIN` |
+| `VOL_MAX` | `100` | `VOL_MAX` |
+| `ALSA_CONTROL` | `"Master"` | `ALSA_CONTROL` |
 
 `DISPLAY_RST` defaults to `None` to avoid a GPIO conflict with `LED_PIN=27`.
 
@@ -1085,7 +1151,14 @@ tests/
 ├── test_tts.py         12 tests — clean_for_speech(), synthesis,
 │                       ffmpeg invocation, temp file cleanup
 │
-├── test_image_search.py 8 tests — Wikipedia API (mocked responses)
+├── test_image_search.py  8 tests — Wikipedia API (mocked responses)
+│
+├── test_volume.py       30 tests — _get_volume parsing, _set_volume args,
+│                        VolumeRocker._adjust (clamp, no-op, on_change),
+│                        GPIO pin setup and cleanup
+│
+├── test_display_volume.py 10 tests — show_volume(), overlay expiry,
+│                        _draw_volume_overlay() pixel/call assertions
 │
 └── test_gui_logic.py   17 tests — mic device filtering, WAV writing,
                         GUI state machine (tkinter skipped headless)
@@ -1186,4 +1259,12 @@ DISPLAY_BL=24
 DISPLAY_SPI_PORT=0
 DISPLAY_RST=                 # empty = no hardware reset (avoids GPIO 27 conflict)
 IMAGE_DISPLAY_SECONDS=8
+
+# Volume rocker
+VOL_UP_PIN=5                 # BCM GPIO for vol-up button (physical pin 29)
+VOL_DOWN_PIN=6               # BCM GPIO for vol-down button (physical pin 31)
+VOL_STEP=5                   # % change per press
+VOL_MIN=0
+VOL_MAX=100
+ALSA_CONTROL=Master          # amixer control name; run 'amixer scontrols' to list
 ```

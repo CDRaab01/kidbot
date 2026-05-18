@@ -29,3 +29,11 @@ DISPLAY_SPI_PORT  = int(os.getenv("DISPLAY_SPI_PORT", "0"))
 _raw_rst = os.getenv("DISPLAY_RST", "")
 DISPLAY_RST       = int(_raw_rst) if _raw_rst.strip() else None  # None avoids LED_PIN=27 conflict
 IMAGE_DISPLAY_SECONDS = int(os.getenv("IMAGE_DISPLAY_SECONDS", "8"))
+
+# Volume rocker (BCM numbering)
+VOL_UP_PIN   = int(os.getenv("VOL_UP_PIN",   "5"))   # physical pin 29
+VOL_DOWN_PIN = int(os.getenv("VOL_DOWN_PIN", "6"))   # physical pin 31
+VOL_STEP     = int(os.getenv("VOL_STEP",     "5"))   # percent per press
+VOL_MIN      = int(os.getenv("VOL_MIN",      "0"))
+VOL_MAX      = int(os.getenv("VOL_MAX",      "100"))
+ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "Master")

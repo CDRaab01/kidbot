@@ -6,11 +6,14 @@ import sys
 import threading
 import time
 
+import RPi.GPIO as GPIO
+
 from .audio import AudioManager
 from .button import PushToTalkButton
 from .client import ServerClient
 from .config import LOG_FILE, SERVER_URL
 from .display import DisplayManager
+from .volume import VolumeRocker
 
 
 def _configure_logging() -> None:
@@ -37,6 +40,7 @@ button = PushToTalkButton()
 audio = AudioManager()
 client = ServerClient()
 display = DisplayManager()
+volume_rocker = VolumeRocker(on_change=display.show_volume)
 
 _busy_lock = threading.Lock()  # prevents overlapping sessions
 
@@ -91,7 +95,9 @@ def on_release():
 def shutdown(sig=None, _frame=None):
     logger.info("Shutting down KidBot.")
     display.cleanup()
+    volume_rocker.cleanup()
     button.cleanup()
+    GPIO.cleanup()
     audio.cleanup()
     sys.exit(0)
 

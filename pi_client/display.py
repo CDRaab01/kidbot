@@ -29,6 +29,9 @@ BAT_GREEN   = (60,  200,  60)
 BAT_YELLOW  = (220, 200,  40)
 BAT_RED     = (220,  40,  40)
 BAT_BG      = (60,   60,  80)
+VOL_COLOR   = (0,  200, 200)   # cyan — same as eye colour
+VOL_BG      = (40,  40,  60)
+VOL_DISPLAY_SECONDS = 2
 
 FACE_STATES = ("IDLE", "LISTENING", "THINKING", "SPEAKING", "HAPPY", "ERROR", "IMAGE")
 
@@ -254,6 +257,23 @@ def _draw_cheeks(draw, lx, rx, y):
 
 
 # ---------------------------------------------------------------------------
+# Volume overlay
+# ---------------------------------------------------------------------------
+
+def _draw_volume_overlay(draw, pct: int) -> None:
+    """Draw a bottom-centre volume bar (180×18 px) on top of the current frame."""
+    bar_w, bar_h = 180, 18
+    bx = (W - bar_w) // 2
+    by = H - bar_h - 6
+
+    # Background pill
+    draw.rectangle([bx, by, bx + bar_w, by + bar_h], fill=VOL_BG)
+    # Fill
+    fill_w = max(2, int((bar_w - 4) * max(0, min(100, pct)) / 100))
+    draw.rectangle([bx + 2, by + 2, bx + 2 + fill_w, by + bar_h - 2], fill=VOL_COLOR)
+
+
+# ---------------------------------------------------------------------------
 # Battery indicator
 # ---------------------------------------------------------------------------
 
@@ -294,6 +314,9 @@ class DisplayManager:
         self._image_override = None   # PIL Image while in IMAGE state
         self._image_expiry = 0.0
 
+        self._vol_pct: Optional[int] = None
+        self._vol_expiry = 0.0
+
         self._battery: Optional[int] = None
         self._lock = threading.Lock()
         self._running = True
@@ -320,6 +343,12 @@ class DisplayManager:
     def show_image_url(self, url: str) -> None:
         """Download url in a background thread and switch to IMAGE state."""
         threading.Thread(target=self._load_image, args=(url,), daemon=True).start()
+
+    def show_volume(self, pct: int) -> None:
+        """Show a transient volume bar overlay for VOL_DISPLAY_SECONDS seconds."""
+        with self._lock:
+            self._vol_pct = int(pct)
+            self._vol_expiry = time.time() + VOL_DISPLAY_SECONDS
 
     def cleanup(self) -> None:
         self._running = False
@@ -356,24 +385,38 @@ class DisplayManager:
     def _animate(self) -> None:
         frame = 0
         while self._running:
+            now = time.time()
             with self._lock:
                 state = self._state
                 override = self._image_override
                 battery = self._battery
-                expiry = self._image_expiry
+                img_expiry = self._image_expiry
+                vol_pct = self._vol_pct
+                vol_expiry = self._vol_expiry
 
             # Auto-revert IMAGE state after timeout
-            if state == "IMAGE" and time.time() > expiry:
+            if state == "IMAGE" and now > img_expiry:
                 with self._lock:
                     self._state = "IDLE"
                     self._image_override = None
                 state = "IDLE"
                 override = None
 
+            # Auto-clear volume overlay after timeout
+            if vol_pct is not None and now > vol_expiry:
+                with self._lock:
+                    self._vol_pct = None
+                vol_pct = None
+
             if state == "IMAGE" and override is not None:
-                frame_img = override
+                frame_img = override.copy()
             else:
                 frame_img = _render_face(state, frame, battery)
+
+            # Draw transient volume bar on top of whatever is on screen
+            if vol_pct is not None:
+                from PIL import ImageDraw
+                _draw_volume_overlay(ImageDraw.Draw(frame_img), vol_pct)
 
             if self._device:
                 try:

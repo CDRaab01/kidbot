@@ -46,4 +46,4 @@ class PushToTalkButton:
             time.sleep(interval)
 
     def cleanup(self):
-        GPIO.cleanup()
+        GPIO.remove_event_detect(BUTTON_PIN)

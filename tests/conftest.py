@@ -47,6 +47,22 @@ _stub("PIL.ImageTk", ImageTk=MagicMock)
 _pil.Image = sys.modules["PIL.Image"]
 _pil.ImageTk = sys.modules["PIL.ImageTk"]
 
+# RPi.GPIO — not available outside the Pi; stub for import only
+_gpio_mod = _stub("RPi", GPIO=MagicMock())
+_gpio_stub = MagicMock()
+_gpio_stub.BCM    = 11
+_gpio_stub.IN     = 1
+_gpio_stub.OUT    = 0
+_gpio_stub.PUD_UP = 22
+_gpio_stub.FALLING = 31
+_gpio_stub.RISING  = 32
+_gpio_stub.BOTH    = 33
+_gpio_stub.HIGH    = 1
+_gpio_stub.LOW     = 0
+_stub("RPi.GPIO")
+sys.modules["RPi.GPIO"] = _gpio_stub
+_gpio_mod.GPIO = _gpio_stub
+
 # tkinter — not available for Python 3.11 in this environment; stub for import only
 _TK_CONSTANTS = dict(
     X="x", Y="y", BOTH="both", LEFT="left", RIGHT="right",
