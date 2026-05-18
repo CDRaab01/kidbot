@@ -12,7 +12,7 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 is fast
 # Gemma 3 4B via Ollama
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "kidbot")   # name given when we import the GGUF
-LLM_MAX_TOKENS = 350
+LLM_MAX_TOKENS = 200
 LLM_TEMPERATURE = 0.7
 
 # Child's name

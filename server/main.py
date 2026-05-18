@@ -1,12 +1,15 @@
 import logging
 import os
+import re
 import tempfile
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from .config import SERVER_HOST, SERVER_PORT, TEMP_DIR
+from .image_search import fetch_image_url
 from .llm import LLMInterface
 from .session import SessionStore
 from .stt import SpeechToText
@@ -42,37 +45,57 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CooperBot Server", version="0.4.0", lifespan=lifespan)
 
 
+_IMAGE_TAG_RE = re.compile(r'\[IMAGE:\s*([^\]]+)\]', re.IGNORECASE)
+
+
+def _extract_image(text: str) -> tuple[str, str | None]:
+    """Remove [IMAGE: term] tag from text. Returns (clean_text, term_or_None)."""
+    m = _IMAGE_TAG_RE.search(text)
+    if m:
+        term = m.group(1).strip()
+        clean = _IMAGE_TAG_RE.sub("", text).strip()
+        return clean, term
+    return text, None
+
+
 def _safe_header(text: str) -> str:
     """Make text safe for HTTP headers — no non-ASCII, no newlines or control chars."""
     text = text.replace("\r", " ").replace("\n", " ")
+    # Normalise common Unicode punctuation before ASCII encoding
+    text = text.replace("‘", "'").replace("’", "'")  # curly apostrophes
+    text = text.replace("“", '"').replace("”", '"')  # curly double quotes
+    text = text.replace("—", "-").replace("–", "-")  # em/en dash
     text = text.encode("ascii", errors="replace").decode("ascii")
     return " ".join(text.split())  # collapse any resulting multiple spaces
 
 
-def _mp3_response(reply_text: str, transcription: str = "") -> Response:
+def _mp3_response(reply_text: str, transcription: str = "", image_url: str = "") -> Response:
     """Synthesise reply and return MP3 with conversation text in headers."""
     if _tts is None:
         raise HTTPException(status_code=503, detail="Models not ready")
     mp3 = _tts.synthesize(reply_text)
-    return Response(
-        content=mp3,
-        media_type="audio/mpeg",
-        headers={
-            "X-Transcription": _safe_header(transcription),
-            "X-Reply":         _safe_header(reply_text),
-        },
-    )
+    headers = {
+        "X-Transcription": _safe_header(transcription),
+        "X-Reply":         _safe_header(reply_text),
+    }
+    if image_url:
+        headers["X-Image-Url"] = image_url
+    return Response(content=mp3, media_type="audio/mpeg", headers=headers)
 
 
-def _process_text(text: str, session_id: str) -> Response:
-    """Shared pipeline: text -> LLM -> TTS -> MP3 response."""
-    if _llm is None or _tts is None:
+def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
+    """Run LLM, extract image tag, fetch image URL. Returns (reply_text, image_url)."""
+    if _llm is None:
         raise HTTPException(status_code=503, detail="Models not ready")
     history = _sessions.get_history(session_id)
-    reply_text = _llm.respond(text, history=history)
-    logger.info("[%s] CooperBot says: %r", session_id, reply_text)
+    raw_reply = _llm.respond(text, history=history)
+    reply_text, image_term = _extract_image(raw_reply)
     _sessions.add_exchange(session_id, text, reply_text)
-    return _mp3_response(reply_text, transcription=text)
+    image_url = ""
+    if image_term:
+        logger.info("[%s] Fetching image for: %r", session_id, image_term)
+        image_url = fetch_image_url(image_term) or ""
+    return reply_text, image_url
 
 
 @app.get("/health")
@@ -112,13 +135,27 @@ async def chat(
         with os.fdopen(tmp_fd, "wb") as f:
             f.write(audio_data)
 
+        t0 = time.perf_counter()
         text = _stt.transcribe(tmp_path)
+        t_stt = time.perf_counter() - t0
+
         if not text:
             logger.info("[%s] No speech detected.", session_id)
             return _mp3_response(SORRY_TRY_AGAIN)
 
-        logger.info("[%s] Child said: %r", session_id, text)
-        return _process_text(text, session_id)
+        logger.info("[%s] STT: %.2fs  heard: %r", session_id, t_stt, text)
+
+        t1 = time.perf_counter()
+        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        t_llm = time.perf_counter() - t1
+
+        t2 = time.perf_counter()
+        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        t_tts = time.perf_counter() - t2
+
+        logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
+                    session_id, t_llm, t_tts, t_stt + t_llm + t_tts)
+        return mp3_response
 
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
@@ -144,7 +181,15 @@ async def chat_text(
         raise HTTPException(status_code=400, detail="Empty text")
     logger.info("[%s] Text input: %r", session_id, text)
     try:
-        return _process_text(text, session_id)
+        t1 = time.perf_counter()
+        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        t_llm = time.perf_counter() - t1
+        t2 = time.perf_counter()
+        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        t_tts = time.perf_counter() - t2
+        logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
+                    session_id, t_llm, t_tts, t_llm + t_tts)
+        return mp3_response
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
         return _mp3_response(SORRY_CANT_THINK)

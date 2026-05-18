@@ -1,11 +1,12 @@
 """
 CooperBot Test GUI
 ------------------
-SPACE      : Start recording / stop recording and send / interrupt playback
+SPACE      : Hold to record, release to send / interrupt playback
 ENTER      : Send typed text directly (bypasses speech recognition)
 ESC        : Clear the text input
 """
 
+import io
 import os
 import queue
 import subprocess
@@ -16,6 +17,7 @@ from tkinter import scrolledtext, ttk
 import wave
 
 import numpy as np
+from PIL import Image, ImageTk
 import requests
 import sounddevice as sd
 
@@ -36,15 +38,18 @@ class CooperBotGUI:
         self.root = root
         self.root.title("CooperBot - Test Console")
         self.root.geometry("680x540")
+        self.root.minsize(480, 360)
         self.root.configure(bg="#2c3e50")
         self.root.resizable(True, True)
 
         self.state = "IDLE"
-        self._audio_frames: list[np.ndarray] = []
+        self._recording = False
+        self._rec_buffer = None
+        self._rec_start = 0.0
         self._ui_queue: queue.Queue = queue.Queue()
         self._input_devices: list[dict] = self._get_input_devices()
         self._selected_device_index: int | None = None
-        self._stream: sd.InputStream | None = None
+        self._images: list = []  # keep PhotoImage refs alive (prevents GC)
 
         self._build_ui()
         self._bind_keys()
@@ -73,48 +78,28 @@ class CooperBotGUI:
         self.mic_combo = ttk.Combobox(
             mic_row, textvariable=self.mic_var,
             values=[d["name"] for d in self._input_devices],
-            state="readonly", width=50, font=("Segoe UI", 10),
+            state="readonly", font=("Segoe UI", 10),
         )
-        self.mic_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.mic_combo.pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
         if self._input_devices:
             self.mic_combo.current(0)
             self._selected_device_index = self._input_devices[0]["index"]
         self.mic_combo.bind("<<ComboboxSelected>>", self._on_mic_selected)
 
-        # Chat area
-        self.chat = scrolledtext.ScrolledText(
-            self.root, wrap=tk.WORD, state=tk.DISABLED,
-            font=("Segoe UI", 11), bg="#f0f3f4", fg="#2c3e50",
-            padx=12, pady=8, relief=tk.FLAT, borderwidth=0,
-        )
-        self.chat.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
-        self.chat.tag_config("you",    foreground="#2471a3", font=("Segoe UI", 11, "bold"))
-        self.chat.tag_config("bot",    foreground="#1e8449", font=("Segoe UI", 11, "bold"))
-        self.chat.tag_config("system", foreground="#888",    font=("Segoe UI", 10, "italic"))
-        self.chat.tag_config("text",   foreground="#6c3483", font=("Segoe UI", 11, "bold"))
+        # ── Bottom widgets packed first so chat can fill remaining space ──
 
-        # Status bar + volume meter
-        status_bar = tk.Frame(self.root, bg="#1a252f", pady=5)
-        status_bar.pack(fill=tk.X, padx=12)
-        tk.Label(status_bar, text="Status:", font=("Segoe UI", 10),
-                 fg="#bdc3c7", bg="#1a252f").pack(side=tk.LEFT)
-        self.status_lbl = tk.Label(
-            status_bar, text="IDLE",
-            font=("Segoe UI", 10, "bold"), fg=STATUS_COLORS["IDLE"], bg="#1a252f"
-        )
-        self.status_lbl.pack(side=tk.LEFT, padx=(4, 20))
-        tk.Label(status_bar, text="Mic level:", font=("Segoe UI", 10),
-                 fg="#bdc3c7", bg="#1a252f").pack(side=tk.LEFT)
-        self.level_canvas = tk.Canvas(status_bar, width=150, height=14,
-                                       bg="#0d1117", highlightthickness=0)
-        self.level_canvas.pack(side=tk.LEFT, padx=(4, 0))
-        self._level_bar = self.level_canvas.create_rectangle(
-            0, 0, 0, 14, fill="#27ae60", outline=""
-        )
+        # Hint bar
+        hint = tk.Frame(self.root, bg="#17202a", pady=4)
+        hint.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Label(
+            hint,
+            text="SPACE (hold): Record, release to send   |   SPACE during playback: Interrupt   |   ENTER: Send text",
+            font=("Segoe UI", 9), fg="#626567", bg="#17202a"
+        ).pack()
 
         # Text input row
         input_row = tk.Frame(self.root, bg="#2c3e50", pady=6)
-        input_row.pack(fill=tk.X, padx=12, pady=(0, 4))
+        input_row.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 4))
 
         self.text_var = tk.StringVar()
         self.text_entry = tk.Entry(
@@ -131,14 +116,36 @@ class CooperBotGUI:
         )
         send_btn.pack(side=tk.RIGHT)
 
-        # Hint bar
-        hint = tk.Frame(self.root, bg="#17202a", pady=4)
-        hint.pack(fill=tk.X)
-        tk.Label(
-            hint,
-            text="SPACE: Start / Stop recording   |   SPACE during playback: Interrupt   |   ENTER: Send text",
-            font=("Segoe UI", 9), fg="#626567", bg="#17202a"
-        ).pack()
+        # Status bar + volume meter
+        status_bar = tk.Frame(self.root, bg="#1a252f", pady=5)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=12)
+        tk.Label(status_bar, text="Status:", font=("Segoe UI", 10),
+                 fg="#bdc3c7", bg="#1a252f").pack(side=tk.LEFT)
+        self.status_lbl = tk.Label(
+            status_bar, text="IDLE",
+            font=("Segoe UI", 10, "bold"), fg=STATUS_COLORS["IDLE"], bg="#1a252f"
+        )
+        self.status_lbl.pack(side=tk.LEFT, padx=(4, 20))
+        tk.Label(status_bar, text="Mic level:", font=("Segoe UI", 10),
+                 fg="#bdc3c7", bg="#1a252f").pack(side=tk.LEFT)
+        self.level_canvas = tk.Canvas(status_bar, width=150, height=14,
+                                       bg="#0d1117", highlightthickness=0)
+        self.level_canvas.pack(side=tk.LEFT, padx=(4, 0))
+        self._level_bar = self.level_canvas.create_rectangle(
+            0, 0, 0, 14, fill="#27ae60", outline=""
+        )
+
+        # Chat area — packed last so it fills all remaining space
+        self.chat = scrolledtext.ScrolledText(
+            self.root, wrap=tk.WORD, state=tk.DISABLED,
+            font=("Segoe UI", 11), bg="#f0f3f4", fg="#2c3e50",
+            padx=12, pady=8, relief=tk.FLAT, borderwidth=0,
+        )
+        self.chat.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
+        self.chat.tag_config("you",    foreground="#2471a3", font=("Segoe UI", 11, "bold"))
+        self.chat.tag_config("bot",    foreground="#1e8449", font=("Segoe UI", 11, "bold"))
+        self.chat.tag_config("system", foreground="#888",    font=("Segoe UI", 10, "italic"))
+        self.chat.tag_config("text",   foreground="#6c3483", font=("Segoe UI", 11, "bold"))
 
     # ------------------------------------------------------------------
     # Microphone helpers
@@ -178,19 +185,24 @@ class CooperBotGUI:
     # ------------------------------------------------------------------
 
     def _bind_keys(self):
-        self.root.bind("<space>",  self._on_space)
+        self.root.bind("<KeyPress-space>",   self._on_space_press)
+        self.root.bind("<KeyRelease-space>", self._on_space_release)
         self.root.bind("<Return>", self._on_enter)
         self.root.bind("<Escape>", lambda e: self.text_var.set(""))
 
-    def _on_space(self, event):
+    def _on_space_press(self, event):
         if self.root.focus_get() is self.text_entry:
             return  # let space work normally in the text box
         if self.state == "IDLE":
             self._start_recording()
-        elif self.state == "RECORDING":
-            self._stop_recording_and_send()
         elif self.state == "PLAYING":
             self._interrupt_playback()
+
+    def _on_space_release(self, event):
+        if self.root.focus_get() is self.text_entry:
+            return
+        if self.state == "RECORDING":
+            self._stop_recording_and_send()
 
     def _on_enter(self, event):
         self._send_text()
@@ -219,39 +231,54 @@ class CooperBotGUI:
 
     def _start_recording(self):
         self._set_state("RECORDING")
-        self._audio_frames = []
-
-        device_name = sd.query_devices(self._selected_device_index)["name"]
-        self._log("System", f"Recording via: {device_name}")
-
-        def _audio_callback(indata, frames, time_info, status):
-            self._audio_frames.append(indata.copy())
-            level = int(np.abs(indata).mean() / 32768 * 150)
-            self._ui_queue.put(("level", level))
-
-        self._stream = sd.InputStream(
+        self._rec_start = __import__("time").time()
+        self._rec_buffer = sd.rec(
+            int(SAMPLE_RATE * 30),   # max 30 seconds
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="int16",
-            blocksize=1024,
             device=self._selected_device_index,
-            callback=_audio_callback,
         )
-        self._stream.start()
+        self._recording = True
+        device_name = sd.query_devices(self._selected_device_index)["name"]
+        self._log("System", f"Recording via: {device_name}")
+
+        # Level meter — samples the live buffer periodically
+        def meter():
+            import time
+            while self._recording:
+                pos = int((time.time() - self._rec_start) * SAMPLE_RATE)
+                if pos > 512:
+                    chunk = self._rec_buffer[max(0, pos - 512):pos]
+                    level = int(np.abs(chunk).mean() / 32768 * 150)
+                    self._ui_queue.put(("level", level))
+                time.sleep(0.05)
+
+        threading.Thread(target=meter, daemon=True).start()
 
     def _stop_recording_and_send(self):
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        import time
+        elapsed = time.time() - self._rec_start
+        self._recording = False
+        sd.stop()
+
+        frames = min(int(elapsed * SAMPLE_RATE), int(SAMPLE_RATE * 30))
+        audio = self._rec_buffer[:frames].copy()
         self._set_state("PROCESSING")
 
         def process():
-            if not self._audio_frames:
+            if frames < 100:
                 self._ui_queue.put(("error", "No audio captured."))
                 return
 
-            audio = np.concatenate(self._audio_frames, axis=0)
+            max_amp = int(np.abs(audio).max())
+            self._ui_queue.put(("chat", ("System", f"Captured {frames} frames, peak amplitude: {max_amp}")))
+
+            if max_amp < 50:
+                self._ui_queue.put(("error", "Audio is silent — mic may not be capturing. Try a different device."))
+                self._ui_queue.put(("state", "IDLE"))
+                return
+
             fd, wav_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
             try:
@@ -272,8 +299,11 @@ class CooperBotGUI:
                 if resp.status_code == 200:
                     transcription = resp.headers.get("X-Transcription", "")
                     reply         = resp.headers.get("X-Reply", "")
+                    image_url     = resp.headers.get("X-Image-Url", "")
                     self._ui_queue.put(("chat", ("You", transcription or "(no transcription)")))
                     self._ui_queue.put(("chat", ("CooperBot", reply)))
+                    if image_url:
+                        self._ui_queue.put(("image", image_url))
                     self._ui_queue.put(("play", resp.content))
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
@@ -307,8 +337,11 @@ class CooperBotGUI:
                     timeout=60,
                 )
                 if resp.status_code == 200:
-                    reply = resp.headers.get("X-Reply", "")
+                    reply     = resp.headers.get("X-Reply", "")
+                    image_url = resp.headers.get("X-Image-Url", "")
                     self._ui_queue.put(("chat", ("CooperBot", reply)))
+                    if image_url:
+                        self._ui_queue.put(("image", image_url))
                     self._ui_queue.put(("play", resp.content))
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
@@ -316,6 +349,35 @@ class CooperBotGUI:
                 self._ui_queue.put(("error", f"Connection error: {e}"))
 
         threading.Thread(target=process, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Image display
+    # ------------------------------------------------------------------
+
+    def _show_image(self, url: str):
+        """Download image from URL and insert it into the chat area."""
+        try:
+            resp = requests.get(
+                url, timeout=8,
+                headers={"User-Agent": "CooperBot/1.0 (educational child chatbot)"},
+            )
+            resp.raise_for_status()
+            img = Image.open(io.BytesIO(resp.content))
+            # Fit within chat width
+            max_w = 420
+            if img.width > max_w:
+                ratio = max_w / img.width
+                img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._images.append(photo)  # prevent garbage collection
+            self.chat.config(state=tk.NORMAL)
+            self.chat.insert(tk.END, "\n")
+            self.chat.image_create(tk.END, image=photo)
+            self.chat.insert(tk.END, "\n")
+            self.chat.config(state=tk.DISABLED)
+            self.chat.see(tk.END)
+        except Exception as exc:
+            self._log("System", f"Image unavailable: {exc}")
 
     # ------------------------------------------------------------------
     # Playback
@@ -350,6 +412,8 @@ class CooperBotGUI:
                 kind = item[0]
                 if kind == "play":
                     threading.Thread(target=self._play_audio, args=(item[1],), daemon=True).start()
+                elif kind == "image":
+                    threading.Thread(target=self._show_image, args=(item[1],), daemon=True).start()
                 elif kind == "chat":
                     _, (speaker, text) = item
                     self._log(speaker, text)
