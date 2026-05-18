@@ -12,6 +12,7 @@ import queue
 import subprocess
 import tempfile
 import threading
+import time
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 import wave
@@ -20,6 +21,8 @@ import numpy as np
 from PIL import Image, ImageTk
 import requests
 import sounddevice as sd
+
+_RESAMPLE = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", 1))
 
 SERVER_URL   = "http://localhost:8765"
 SESSION_ID   = "gui-session"
@@ -33,12 +36,139 @@ STATUS_COLORS = {
 }
 
 
+class FacePanel:
+    """
+    Emulated 320×240 KidBot LCD display rendered inside a tkinter Canvas.
+
+    Renders the same robot face as pi_client/display.py, scaled to fit
+    the panel.  Call set_state() with GUI states; call show_image_url()
+    to download and display a photo.
+    """
+
+    CANVAS_W = 240
+    CANVAS_H = 180
+    SRC_W    = 320
+    SRC_H    = 240
+
+    _STATE_MAP = {
+        "IDLE":       "IDLE",
+        "RECORDING":  "LISTENING",
+        "PROCESSING": "THINKING",
+        "PLAYING":    "SPEAKING",
+    }
+
+    def __init__(self, parent: tk.Widget, root: tk.Tk):
+        self._root         = root
+        self._face_state   = "IDLE"
+        self._frame_idx    = 0
+        self._photo        = None        # PhotoImage reference — prevents GC
+        self._image_over   = None        # PIL Image while in IMAGE state
+        self._image_expiry = 0.0
+        self._lock         = threading.Lock()
+
+        outer = tk.Frame(parent, bg="#1a252f")
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            outer, text="KidBot Screen",
+            font=("Segoe UI", 10, "bold"), fg="#bdc3c7", bg="#1a252f",
+        ).pack(pady=(8, 2))
+
+        bezel = tk.Frame(outer, bg="#0a0a18", bd=3, relief=tk.SUNKEN)
+        bezel.pack(padx=10, pady=4)
+
+        self._canvas = tk.Canvas(
+            bezel, width=self.CANVAS_W, height=self.CANVAS_H,
+            bg="#141428", highlightthickness=0,
+        )
+        self._canvas.pack()
+
+        tk.Label(
+            outer, text="320×240 (scaled)",
+            font=("Segoe UI", 8), fg="#4a5568", bg="#1a252f",
+        ).pack(pady=(2, 0))
+
+        self._tick()
+
+    def set_state(self, gui_state: str) -> None:
+        """Map a GUI state to a face state, respecting active IMAGE display."""
+        face = self._STATE_MAP.get(gui_state, "IDLE")
+        with self._lock:
+            if self._face_state == "IMAGE" and face == "IDLE":
+                return  # let image expire naturally
+            self._face_state = face
+            if face != "IMAGE":
+                self._image_over = None
+
+    def set_face_state(self, face_state: str) -> None:
+        """Set face state directly (bypasses GUI-state mapping)."""
+        with self._lock:
+            self._face_state = face_state
+            if face_state != "IMAGE":
+                self._image_over = None
+
+    def show_image_url(self, url: str) -> None:
+        """Download and display an image, auto-reverting to IDLE after 8 s."""
+        threading.Thread(target=self._load_image, args=(url,), daemon=True).start()
+
+    def _load_image(self, url: str) -> None:
+        try:
+            resp = requests.get(
+                url, timeout=8,
+                headers={"User-Agent": "CooperBot/1.0 (educational child chatbot)"},
+            )
+            resp.raise_for_status()
+            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            max_w, max_h = self.SRC_W, self.SRC_H - 24
+            img.thumbnail((max_w, max_h), _RESAMPLE)
+            canvas_img = Image.new("RGB", (self.SRC_W, self.SRC_H), (20, 20, 40))
+            x = (self.SRC_W - img.width) // 2
+            y = 24 + (max_h - img.height) // 2
+            canvas_img.paste(img, (x, y))
+            with self._lock:
+                self._image_over   = canvas_img
+                self._face_state   = "IMAGE"
+                self._image_expiry = time.time() + 8
+        except Exception as exc:
+            pass  # silently ignore broken images
+
+    def _tick(self) -> None:
+        with self._lock:
+            state  = self._face_state
+            over   = self._image_over
+            expiry = self._image_expiry
+            fidx   = self._frame_idx
+
+        if state == "IMAGE" and time.time() > expiry:
+            with self._lock:
+                self._face_state = "IDLE"
+                self._image_over = None
+            state = "IDLE"
+            over  = None
+
+        if state == "IMAGE" and over is not None:
+            src_img = over.copy()
+        else:
+            from pi_client.display import _render_face
+            src_img = _render_face(state, fidx, None)
+
+        display_img = src_img.resize((self.CANVAS_W, self.CANVAS_H), _RESAMPLE)
+        photo = ImageTk.PhotoImage(display_img)
+        self._photo = photo  # hold reference
+        self._canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+
+        with self._lock:
+            self._frame_idx = (fidx + 1) % 1000
+
+        self._root.after(100, self._tick)
+
+
 class CooperBotGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("CooperBot - Test Console")
-        self.root.geometry("680x540")
-        self.root.minsize(480, 360)
+        self.root.geometry("960x560")
+        self.root.minsize(700, 420)
         self.root.configure(bg="#2c3e50")
         self.root.resizable(True, True)
 
@@ -51,6 +181,7 @@ class CooperBotGUI:
         self._selected_device_index: int | None = None
         self._images: list = []  # keep PhotoImage refs alive (prevents GC)
         self._current_proc = None  # active ffmpeg process for interrupt
+        self.face: FacePanel | None = None
 
         self._build_ui()
         self._bind_keys()
@@ -136,13 +267,23 @@ class CooperBotGUI:
             0, 0, 0, 14, fill="#27ae60", outline=""
         )
 
-        # Chat area — packed last so it fills all remaining space
+        # Main content area — chat left, face panel right
+        main_area = tk.Frame(self.root, bg="#2c3e50")
+        main_area.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
+
+        # Right: face panel (fixed width, does not expand horizontally)
+        right_panel = tk.Frame(main_area, bg="#1a252f", width=272)
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        right_panel.pack_propagate(False)
+        self.face = FacePanel(right_panel, self.root)
+
+        # Left: chat fills remaining space
         self.chat = scrolledtext.ScrolledText(
-            self.root, wrap=tk.WORD, state=tk.DISABLED,
+            main_area, wrap=tk.WORD, state=tk.DISABLED,
             font=("Segoe UI", 11), bg="#f0f3f4", fg="#2c3e50",
             padx=12, pady=8, relief=tk.FLAT, borderwidth=0,
         )
-        self.chat.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
+        self.chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.chat.tag_config("you",    foreground="#2471a3", font=("Segoe UI", 11, "bold"))
         self.chat.tag_config("bot",    foreground="#1e8449", font=("Segoe UI", 11, "bold"))
         self.chat.tag_config("system", foreground="#888",    font=("Segoe UI", 10, "italic"))
@@ -215,6 +356,8 @@ class CooperBotGUI:
     def _set_state(self, state: str):
         self.state = state
         self.status_lbl.config(text=state, fg=STATUS_COLORS.get(state, "#ecf0f1"))
+        if self.face:
+            self.face.set_state(state)
 
     def _log(self, speaker: str, text: str):
         self.chat.config(state=tk.NORMAL)
@@ -232,7 +375,7 @@ class CooperBotGUI:
 
     def _start_recording(self):
         self._set_state("RECORDING")
-        self._rec_start = __import__("time").time()
+        self._rec_start = time.time()
         self._rec_buffer = sd.rec(
             int(SAMPLE_RATE * 30),   # max 30 seconds
             samplerate=SAMPLE_RATE,
@@ -258,7 +401,6 @@ class CooperBotGUI:
         threading.Thread(target=meter, daemon=True).start()
 
     def _stop_recording_and_send(self):
-        import time
         elapsed = time.time() - self._rec_start
         self._recording = False
         sd.stop()
@@ -302,6 +444,7 @@ class CooperBotGUI:
                     transcription = resp.headers.get("X-Transcription", "")
                     self._ui_queue.put(("chat", ("You", transcription or "(no transcription)")))
                     self._play_stream(resp.iter_content(chunk_size=4096))
+                    self._after_play_check()
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
 
@@ -336,6 +479,7 @@ class CooperBotGUI:
                 )
                 if resp.status_code == 200:
                     self._play_stream(resp.iter_content(chunk_size=4096))
+                    self._after_play_check()
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
             except requests.RequestException as e:
@@ -422,6 +566,34 @@ class CooperBotGUI:
         self._log("System", "Interrupted.")
 
     # ------------------------------------------------------------------
+    # Post-play face + image update
+    # ------------------------------------------------------------------
+
+    def _after_play_check(self):
+        """
+        Called from a background thread after audio playback finishes.
+        Polls the server for a pending image URL; if found, shows it in
+        the face panel and chat.  Otherwise briefly shows HAPPY then IDLE.
+        """
+        try:
+            img_resp = requests.get(
+                f"{SERVER_URL}/session/{SESSION_ID}/latest_image",
+                timeout=5,
+            )
+            if img_resp.status_code == 200:
+                url = img_resp.json().get("image_url", "")
+                if url:
+                    self._ui_queue.put(("face_image_url", url))
+                    self._ui_queue.put(("image", url))
+                    return
+        except Exception:
+            pass
+        # No image — show happy briefly
+        self._ui_queue.put(("face_state", "HAPPY"))
+        time.sleep(1.5)
+        self._ui_queue.put(("face_state", "IDLE"))
+
+    # ------------------------------------------------------------------
     # UI queue (thread -> main thread bridge)
     # ------------------------------------------------------------------
 
@@ -441,6 +613,12 @@ class CooperBotGUI:
                         self.level_canvas.coords(self._level_bar, 0, 0, 0, 14)
                 elif kind == "level":
                     self.level_canvas.coords(self._level_bar, 0, 0, item[1], 14)
+                elif kind == "face_state":
+                    if self.face:
+                        self.face.set_face_state(item[1])
+                elif kind == "face_image_url":
+                    if self.face:
+                        self.face.show_image_url(item[1])
                 elif kind == "error":
                     self._log("System", f"Error: {item[1]}")
                     self._set_state("IDLE")

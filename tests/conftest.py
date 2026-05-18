@@ -56,7 +56,8 @@ _TK_CONSTANTS = dict(
 )
 _tk = _stub("tkinter", **_TK_CONSTANTS,
             Tk=MagicMock, Frame=MagicMock, Label=MagicMock, Button=MagicMock,
-            Entry=MagicMock, Canvas=MagicMock, StringVar=MagicMock)
+            Entry=MagicMock, Canvas=MagicMock, StringVar=MagicMock,
+            Widget=MagicMock)
 _stub("tkinter.ttk", Combobox=MagicMock)
 _stub("tkinter.scrolledtext", ScrolledText=MagicMock)
 # Make sub-modules accessible as attributes (from tkinter import scrolledtext, ttk)
