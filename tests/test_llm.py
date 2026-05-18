@@ -1,14 +1,11 @@
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub out the ollama module before any server code imports it
-_ollama_stub = ModuleType("ollama")
-_ollama_stub.list = MagicMock()
-_ollama_stub.chat = MagicMock()
-sys.modules.setdefault("ollama", _ollama_stub)
+# conftest.py registers the ollama stub before any test file is imported
+_ollama_stub = sys.modules["ollama"]
 
 from server.guardrails import OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE  # noqa: E402
 from server.llm import LLMInterface  # noqa: E402
