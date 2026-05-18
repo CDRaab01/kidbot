@@ -93,6 +93,20 @@ class ServerClient:
         logger.error("Server returned %d: %s", resp.status_code, resp.text)
         return self.error_audio
 
+    def get_latest_image(self) -> str | None:
+        """Poll the server for an image URL generated during the last exchange."""
+        try:
+            resp = requests.get(
+                f"{SERVER_URL}/session/{self.session_id}/latest_image",
+                headers=self._headers,
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("image_url") or None
+        except requests.RequestException as exc:
+            logger.warning("Could not fetch latest image: %s", exc)
+        return None
+
     def send_audio_stream(self, wav_path: str):
         """
         Send WAV to /chat_stream. Returns a chunk iterator on success, or None on

@@ -419,3 +419,29 @@ class TestChatStream:
                 data={"session_id": "s1"},
             )
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /session/{session_id}/latest_image
+# ---------------------------------------------------------------------------
+
+class TestLatestImageEndpoint:
+    def test_returns_empty_url_for_unknown_session(self):
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/ghost-session/latest_image")
+        assert resp.status_code == 200
+        assert resp.json()["image_url"] == ""
+
+    def test_returns_and_clears_stored_image_url(self):
+        from server.main import _sessions
+        # Seed a session with an image URL
+        _sessions.get_history("img-test")
+        _sessions.set_latest_image("img-test", "https://example.com/dino.jpg")
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/img-test/latest_image")
+        assert resp.status_code == 200
+        assert resp.json()["image_url"] == "https://example.com/dino.jpg"
+        # Second call should return empty (cleared)
+        with _loaded_client() as (client, *_):
+            resp2 = client.get("/session/img-test/latest_image")
+        assert resp2.json()["image_url"] == ""

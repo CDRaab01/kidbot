@@ -268,6 +268,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     t.start()
 
     full_parts: list[str] = []
+    image_term: str | None = None
     while True:
         kind, value = await queue.get()
         if kind == "done":
@@ -275,6 +276,9 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if kind == "err":
             logger.error("LLM stream error: %s", value)
             break
+        m = _IMAGE_TAG_RE.search(value)
+        if m and image_term is None:
+            image_term = m.group(1).strip()
         clean = _IMAGE_TAG_RE.sub("", value).strip()
         if not clean:
             continue
@@ -285,6 +289,22 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     t.join()
     if full_parts:
         _sessions.add_exchange(session_id, text, " ".join(full_parts))
+    if image_term:
+        logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
+        asyncio.ensure_future(_fetch_and_store_image(session_id, image_term))
+
+
+async def _fetch_and_store_image(session_id: str, term: str) -> None:
+    url = await run_in_threadpool(fetch_image_url, term) or ""
+    if url:
+        _sessions.set_latest_image(session_id, url)
+        logger.info("[%s] Stored image URL for %r", session_id, term)
+
+
+@app.get("/session/{session_id}/latest_image")
+async def get_latest_image(session_id: str):
+    """One-shot: returns and clears the latest image URL for a session."""
+    return {"image_url": _sessions.get_and_clear_latest_image(session_id)}
 
 
 @app.post("/chat_text_stream")
