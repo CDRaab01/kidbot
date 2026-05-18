@@ -1,17 +1,30 @@
+"""
+Multi-source image search for kid-friendly content.
+
+Sources (in priority order):
+  1. Wikipedia   — broad encyclopedic coverage, always child-appropriate
+  2. NASA Images — space, planets, spacecraft, science
+  3. iNaturalist — animals, plants, insects, nature
+
+All three sources are free, require no API key, and serve educational content.
+Sources run in parallel; the highest-priority result wins.
+"""
+import concurrent.futures
 import logging
 import requests
 
 logger = logging.getLogger(__name__)
 
 _HEADERS = {"User-Agent": "CooperBot/1.0 (educational child chatbot; contact via github)"}
+_TIMEOUT = 5  # seconds per source
 
 
-def fetch_image_url(term: str, size: int = 500) -> str | None:
-    """
-    Search Wikipedia for an image of `term`.
-    Uses the Wikipedia pageimages API — no API key, always child-appropriate.
-    Returns a thumbnail URL or None if nothing found.
-    """
+# ---------------------------------------------------------------------------
+# Source implementations
+# ---------------------------------------------------------------------------
+
+def _search_wikipedia(term: str, size: int) -> str | None:
+    """Wikipedia pageimages API — broad encyclopedic coverage."""
     try:
         resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
@@ -26,16 +39,89 @@ def fetch_image_url(term: str, size: int = 500) -> str | None:
                 "redirects": 1,
             },
             headers=_HEADERS,
-            timeout=6,
+            timeout=_TIMEOUT,
         )
         resp.raise_for_status()
         pages = resp.json().get("query", {}).get("pages", {}).values()
-        # Sort by search index so we pick the most relevant result
         for page in sorted(pages, key=lambda p: p.get("index", 99)):
             url = page.get("thumbnail", {}).get("source", "")
             if url:
-                logger.info("Image found for %r: %s", term, url)
                 return url
     except Exception as exc:
-        logger.warning("Image search failed for %r: %s", term, exc)
+        logger.warning("Wikipedia image search failed for %r: %s", term, exc)
+    return None
+
+
+def _search_nasa(term: str, size: int) -> str | None:
+    """NASA Image and Video Library — space, science, engineering imagery."""
+    try:
+        resp = requests.get(
+            "https://images-api.nasa.gov/search",
+            params={"q": term, "media_type": "image"},
+            headers=_HEADERS,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("collection", {}).get("items", [])
+        for item in items:
+            for link in item.get("links", []):
+                href = link.get("href", "")
+                if href and any(href.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif")):
+                    return href
+    except Exception as exc:
+        logger.warning("NASA image search failed for %r: %s", term, exc)
+    return None
+
+
+def _search_inaturalist(term: str, size: int) -> str | None:
+    """iNaturalist taxa — animals, plants, insects, and nature photography."""
+    try:
+        resp = requests.get(
+            "https://api.inaturalist.org/v1/taxa",
+            params={"q": term, "per_page": 5},
+            headers=_HEADERS,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        for result in resp.json().get("results", []):
+            photo = result.get("default_photo") or {}
+            url = photo.get("medium_url") or photo.get("square_url", "")
+            if url:
+                return url
+    except Exception as exc:
+        logger.warning("iNaturalist image search failed for %r: %s", term, exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_image_url(term: str, size: int = 500) -> str | None:
+    """
+    Search all kid-friendly image sources in parallel.
+    Returns the highest-priority source result, or None if all sources fail.
+
+    Priority: Wikipedia → NASA → iNaturalist
+    Sources are resolved by name at call time so they can be patched in tests.
+    """
+    sources = [_search_wikipedia, _search_nasa, _search_inaturalist]
+    results: dict[int, str | None] = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as executor:
+        # Key by index so priority order is preserved regardless of completion order
+        indexed = {i: executor.submit(src, term, size) for i, src in enumerate(sources)}
+        done, _ = concurrent.futures.wait(indexed.values(), timeout=8)
+
+    for i, src in enumerate(sources):
+        fut = indexed[i]
+        if fut not in done:
+            continue
+        try:
+            url = fut.result()
+        except Exception:
+            continue
+        if url:
+            logger.info("Image found for %r via %s: %s", term, getattr(src, '__name__', src), url)
+            return url
     return None
