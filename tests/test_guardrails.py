@@ -1,9 +1,57 @@
 import pytest
+from unittest.mock import patch
 from server.guardrails import (
     REDIRECT_RESPONSE,
+    _BASE_PROMPT,
+    get_system_prompt,
     is_input_safe,
     is_output_safe,
 )
+
+
+# --- get_system_prompt ---
+
+class TestGetSystemPrompt:
+    def test_returns_string(self):
+        prompt = get_system_prompt()
+        assert isinstance(prompt, str)
+        assert len(prompt) > 0
+
+    def test_contains_base_prompt(self):
+        prompt = get_system_prompt()
+        assert _BASE_PROMPT in prompt
+
+    def test_morning_context_injected(self):
+        with patch("server.guardrails.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 8  # 08:00 → morning
+            prompt = get_system_prompt()
+        assert "morning" in prompt.lower()
+
+    def test_afternoon_context_injected(self):
+        with patch("server.guardrails.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 14  # 14:00 → afternoon
+            prompt = get_system_prompt()
+        assert "afternoon" in prompt.lower()
+
+    def test_evening_context_injected(self):
+        with patch("server.guardrails.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 19  # 19:00 → evening
+            prompt = get_system_prompt()
+        assert "evening" in prompt.lower()
+
+    def test_late_night_context_injected(self):
+        with patch("server.guardrails.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 23  # 23:00 → late night
+            prompt = get_system_prompt()
+        assert "late" in prompt.lower()
+
+    def test_called_twice_returns_same_base_content(self):
+        """get_system_prompt() is not cached — each call re-evaluates time."""
+        p1 = get_system_prompt()
+        p2 = get_system_prompt()
+        # Base prompt content should always be present regardless of when called
+        assert _BASE_PROMPT in p1
+        assert _BASE_PROMPT in p2
 
 
 # --- is_input_safe ---

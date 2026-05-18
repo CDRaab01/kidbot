@@ -41,7 +41,25 @@ class TextToSpeech:
     def __init__(self):
         logger.info("Loading Kokoro ONNX TTS...")
         self.kokoro = Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
-        logger.info("TTS ready. Voice: %s  Speed: %s", KOKORO_VOICE, KOKORO_SPEED)
+        self.voice = KOKORO_VOICE
+        self.speed = KOKORO_SPEED
+        logger.info("TTS ready. Voice: %s  Speed: %s", self.voice, self.speed)
+
+    def available_voices(self) -> list[str]:
+        """Return sorted list of voice names from the voices file."""
+        try:
+            data = np.load(KOKORO_VOICES_PATH)
+            return sorted(data.files)
+        except Exception:
+            return [self.voice]
+
+    def set_voice(self, voice: str) -> None:
+        self.voice = voice
+        logger.info("Voice changed to: %s", voice)
+
+    def set_speed(self, speed: float) -> None:
+        self.speed = max(0.5, min(2.0, speed))
+        logger.info("Speed changed to: %.2f", self.speed)
 
     def synthesize(self, text: str) -> bytes:
         """Return MP3 bytes for the given text."""
@@ -51,8 +69,8 @@ class TextToSpeech:
 
         samples, sample_rate = self.kokoro.create(
             text,
-            voice=KOKORO_VOICE,
-            speed=KOKORO_SPEED,
+            voice=self.voice,
+            speed=self.speed,
             lang="en-gb",
         )
 

@@ -1,6 +1,6 @@
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -82,6 +82,18 @@ class TestLLMInterface:
         assert len(call_messages) == 4
         assert call_messages[1] == {"role": "user", "content": "Hi"}
         assert call_messages[3] == {"role": "user", "content": "How are you?"}
+
+    def test_system_prompt_evaluated_fresh_each_call(self):
+        """get_system_prompt() should be called per request so time context stays current."""
+        _ollama_stub.chat.return_value = _make_ollama_response("Great!")
+        llm = LLMInterface()
+
+        with patch("server.llm.get_system_prompt", return_value="PROMPT_A") as mock_gsp:
+            llm.respond("Hello")
+            llm.respond("Hello again")
+
+        # Called once per respond() invocation, not cached at init time
+        assert mock_gsp.call_count == 2
 
     def test_model_not_found_raises_runtime_error(self):
         mock_model = MagicMock()

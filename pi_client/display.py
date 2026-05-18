@@ -129,7 +129,7 @@ def _render_face(state: str, frame: int, battery: Optional[int]) -> "PIL.Image.I
         _draw_thinking_dots(draw, cx, cy + 55, frame)
 
     elif state == "SPEAKING":
-        _draw_circle_eyes(draw, leye_x, reye_x, eye_y, r=22)
+        _draw_idle_eyes(draw, leye_x, reye_x, eye_y, frame)  # blink-capable eyes
         _draw_mouth_speaking(draw, cx, cy + 30, frame)
 
     elif state == "HAPPY":
@@ -220,25 +220,15 @@ def _draw_mouth_open_o(draw, cx, y):
     draw.ellipse([cx - 22, y - 15, cx + 22, y + 15], outline=MOUTH_COLOR, width=3)
 
 
-_SPEAK_FRAMES = [
-    ("flat",   0),
-    ("arc_sm", 10),
-    ("arc_md", 20),
-    ("oval",   0),
-    ("arc_md", 20),
-    ("arc_sm", 10),
-]
+_SPEAK_HEIGHTS = [0, 8, 16, 24, 16, 8]  # mouth opening heights — consistent arc throughout
 
 
 def _draw_mouth_speaking(draw, cx, y, frame):
-    phase = _SPEAK_FRAMES[(frame // 2) % len(_SPEAK_FRAMES)]
-    kind, h = phase
-    if kind == "flat":
+    h = _SPEAK_HEIGHTS[(frame // 3) % len(_SPEAK_HEIGHTS)]
+    if h == 0:
         draw.line([cx - 35, y, cx + 35, y], fill=MOUTH_COLOR, width=3)
-    elif kind in ("arc_sm", "arc_md"):
+    else:
         draw.arc([cx - 35, y - h, cx + 35, y + h], start=0, end=180, fill=MOUTH_COLOR, width=3)
-    elif kind == "oval":
-        draw.ellipse([cx - 22, y - 18, cx + 22, y + 18], outline=MOUTH_COLOR, width=3)
 
 
 # ---------------------------------------------------------------------------

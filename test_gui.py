@@ -28,6 +28,22 @@ SERVER_URL   = "http://localhost:8765"
 SESSION_ID   = "gui-session"
 SAMPLE_RATE  = 16000
 
+
+def _beep(freq: int, duration: float = 0.08, volume: float = 0.22) -> None:
+    """Play a short sine-wave beep (non-blocking after wait)."""
+    try:
+        sr = 22050
+        n  = int(sr * duration)
+        t  = np.linspace(0, duration, n, False)
+        tone = np.sin(2 * np.pi * freq * t).astype(np.float32)
+        fade = min(int(sr * 0.012), n // 4)
+        tone[:fade]  *= np.linspace(0, 1, fade)
+        tone[-fade:] *= np.linspace(1, 0, fade)
+        sd.play((tone * volume * 32767).astype(np.int16), samplerate=sr)
+        sd.wait()
+    except Exception:
+        pass
+
 STATUS_COLORS = {
     "IDLE":       "#27ae60",
     "RECORDING":  "#e74c3c",
@@ -101,8 +117,10 @@ class FacePanel:
                 self._image_over = None
 
     def set_face_state(self, face_state: str) -> None:
-        """Set face state directly (bypasses GUI-state mapping)."""
+        """Set face state directly (bypasses GUI-state mapping). Respects active IMAGE."""
         with self._lock:
+            if self._face_state == "IMAGE":
+                return  # image is showing — don't override it
             self._face_state = face_state
             if face_state != "IMAGE":
                 self._image_over = None
@@ -200,6 +218,11 @@ class CooperBotGUI:
             header, text="CooperBot  Test Console",
             font=("Segoe UI", 15, "bold"), fg="#ecf0f1", bg="#1a252f"
         ).pack()
+        tk.Button(
+            header, text="⚙ Settings", command=self._open_settings,
+            font=("Segoe UI", 9), bg="#2c3e50", fg="#bdc3c7",
+            relief=tk.FLAT, padx=8, pady=2, activebackground="#3d5166",
+        ).place(relx=1.0, rely=0.5, anchor=tk.E, x=-10)
 
         # Microphone selector — top of window, always visible
         mic_row = tk.Frame(self.root, bg="#2c3e50", pady=5)
@@ -277,17 +300,145 @@ class CooperBotGUI:
         right_panel.pack_propagate(False)
         self.face = FacePanel(right_panel, self.root)
 
-        # Left: chat fills remaining space
+        # Left: tabbed notebook — Chat | Console
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("TNotebook",        background="#2c3e50", borderwidth=0)
+        style.configure("TNotebook.Tab",    background="#1a252f", foreground="#bdc3c7",
+                        font=("Segoe UI", 10), padding=(12, 4))
+        style.map("TNotebook.Tab",
+                  background=[("selected", "#2c3e50")],
+                  foreground=[("selected", "#ecf0f1")])
+
+        self._notebook = ttk.Notebook(main_area)
+        self._notebook.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Tab 1 — Conversation
+        chat_frame = tk.Frame(self._notebook, bg="#f0f3f4")
+        self._notebook.add(chat_frame, text="  Chat  ")
         self.chat = scrolledtext.ScrolledText(
-            main_area, wrap=tk.WORD, state=tk.DISABLED,
+            chat_frame, wrap=tk.WORD, state=tk.DISABLED,
             font=("Segoe UI", 11), bg="#f0f3f4", fg="#2c3e50",
             padx=12, pady=8, relief=tk.FLAT, borderwidth=0,
         )
-        self.chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.chat.tag_config("you",    foreground="#2471a3", font=("Segoe UI", 11, "bold"))
-        self.chat.tag_config("bot",    foreground="#1e8449", font=("Segoe UI", 11, "bold"))
-        self.chat.tag_config("system", foreground="#888",    font=("Segoe UI", 10, "italic"))
-        self.chat.tag_config("text",   foreground="#6c3483", font=("Segoe UI", 11, "bold"))
+        self.chat.pack(fill=tk.BOTH, expand=True)
+        self.chat.tag_config("you",  foreground="#2471a3", font=("Segoe UI", 11, "bold"))
+        self.chat.tag_config("bot",  foreground="#1e8449", font=("Segoe UI", 11, "bold"))
+        self.chat.tag_config("text", foreground="#6c3483", font=("Segoe UI", 11, "bold"))
+
+        # Tab 2 — Console log
+        console_frame = tk.Frame(self._notebook, bg="#0d1117")
+        self._notebook.add(console_frame, text="  Console  ")
+        self.console = scrolledtext.ScrolledText(
+            console_frame, wrap=tk.WORD, state=tk.DISABLED,
+            font=("Consolas", 9), bg="#0d1117", fg="#7ec8e3",
+            padx=10, pady=6, relief=tk.FLAT, borderwidth=0,
+        )
+        self.console.pack(fill=tk.BOTH, expand=True)
+        self.console.tag_config("warn", foreground="#f39c12")
+        self.console.tag_config("err",  foreground="#e74c3c")
+
+        # Clear the notification dot when user switches to console tab
+        def _on_tab_change(event):
+            if self._notebook.index("current") == 1:
+                self._notebook.tab(1, text="  Console  ")
+        self._notebook.bind("<<NotebookTabChanged>>", _on_tab_change)
+
+    # ------------------------------------------------------------------
+    # Settings panel
+    # ------------------------------------------------------------------
+
+    def _open_settings(self):
+        win = tk.Toplevel(self.root)
+        win.title("Settings")
+        win.configure(bg="#1a252f")
+        win.resizable(False, False)
+        win.grab_set()  # modal
+
+        pad = {"padx": 16, "pady": 6}
+
+        tk.Label(win, text="CooperBot Settings", font=("Segoe UI", 13, "bold"),
+                 fg="#ecf0f1", bg="#1a252f").grid(row=0, column=0, columnspan=2, pady=(14, 8))
+
+        # --- Voice ---
+        tk.Label(win, text="Voice:", font=("Segoe UI", 10, "bold"),
+                 fg="#bdc3c7", bg="#1a252f").grid(row=1, column=0, sticky=tk.E, **pad)
+        voice_var = tk.StringVar()
+        voice_combo = ttk.Combobox(win, textvariable=voice_var, state="readonly",
+                                   font=("Segoe UI", 10), width=22)
+        voice_combo.grid(row=1, column=1, sticky=tk.W, **pad)
+
+        # --- Speed ---
+        tk.Label(win, text="Speed:", font=("Segoe UI", 10, "bold"),
+                 fg="#bdc3c7", bg="#1a252f").grid(row=2, column=0, sticky=tk.E, **pad)
+        speed_frame = tk.Frame(win, bg="#1a252f")
+        speed_frame.grid(row=2, column=1, sticky=tk.W, **pad)
+        speed_var = tk.DoubleVar(value=1.2)
+        speed_lbl = tk.Label(speed_frame, text="1.20×", font=("Segoe UI", 10),
+                              fg="#ecf0f1", bg="#1a252f", width=5)
+        speed_lbl.pack(side=tk.RIGHT, padx=(6, 0))
+
+        def _on_speed(val):
+            speed_lbl.config(text=f"{float(val):.2f}×")
+
+        tk.Scale(
+            speed_frame, variable=speed_var, from_=0.5, to=2.0, resolution=0.05,
+            orient=tk.HORIZONTAL, length=180, command=_on_speed,
+            bg="#1a252f", fg="#ecf0f1", troughcolor="#2c3e50",
+            highlightthickness=0, showvalue=False,
+        ).pack(side=tk.LEFT)
+
+        # --- Status label ---
+        status_var = tk.StringVar(value="Fetching current settings…")
+        tk.Label(win, textvariable=status_var, font=("Segoe UI", 9, "italic"),
+                 fg="#7f8c8d", bg="#1a252f").grid(row=3, column=0, columnspan=2, pady=(0, 4))
+
+        # --- Buttons ---
+        btn_frame = tk.Frame(win, bg="#1a252f")
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(4, 14))
+
+        def _apply():
+            def _do():
+                try:
+                    requests.post(
+                        f"{SERVER_URL}/settings",
+                        data={"voice": voice_var.get(), "speed": str(round(speed_var.get(), 2))},
+                        timeout=5,
+                    )
+                    status_var.set(f"Applied: {voice_var.get()} @ {speed_var.get():.2f}×")
+                    self._log("System", f"Settings updated — voice: {voice_var.get()}, speed: {speed_var.get():.2f}×")
+                except Exception as e:
+                    status_var.set(f"Error: {e}")
+            threading.Thread(target=_do, daemon=True).start()
+
+        tk.Button(btn_frame, text="Apply", command=_apply,
+                  font=("Segoe UI", 10, "bold"), bg="#2980b9", fg="white",
+                  relief=tk.FLAT, padx=18, pady=4, activebackground="#1a6fa3"
+                  ).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Close", command=win.destroy,
+                  font=("Segoe UI", 10), bg="#2c3e50", fg="#bdc3c7",
+                  relief=tk.FLAT, padx=18, pady=4, activebackground="#3d5166"
+                  ).pack(side=tk.LEFT, padx=6)
+
+        # Fetch current settings from server
+        def _fetch():
+            try:
+                r = requests.get(f"{SERVER_URL}/settings/voices", timeout=5)
+                if r.status_code == 200:
+                    data = r.json()
+                    voices = data.get("voices", [])
+                    cur_voice = data.get("current_voice", "")
+                    cur_speed = data.get("current_speed", 1.2)
+                    voice_combo["values"] = voices
+                    voice_var.set(cur_voice if cur_voice in voices else (voices[0] if voices else ""))
+                    speed_var.set(cur_speed)
+                    speed_lbl.config(text=f"{cur_speed:.2f}×")
+                    status_var.set("Ready.")
+                else:
+                    status_var.set("Could not load settings from server.")
+            except Exception as e:
+                status_var.set(f"Server unreachable: {e}")
+        threading.Thread(target=_fetch, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Microphone helpers
@@ -360,14 +511,27 @@ class CooperBotGUI:
             self.face.set_state(state)
 
     def _log(self, speaker: str, text: str):
-        self.chat.config(state=tk.NORMAL)
-        if self.chat.index(tk.END).strip() != "1.0":
-            self.chat.insert(tk.END, "\n")
-        tag = {"You": "you", "CooperBot": "bot", "You (text)": "text"}.get(speaker, "system")
-        self.chat.insert(tk.END, f"{speaker}: ", tag)
-        self.chat.insert(tk.END, text)
-        self.chat.config(state=tk.DISABLED)
-        self.chat.see(tk.END)
+        if speaker == "System":
+            # Route to console tab
+            self.console.config(state=tk.NORMAL)
+            tag = "err" if text.lower().startswith("error") else ""
+            self.console.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {text}\n", tag)
+            self.console.config(state=tk.DISABLED)
+            self.console.see(tk.END)
+            # Flash tab label if console isn't currently visible
+            if self._notebook.index("current") != 1:
+                self._notebook.tab(1, text="  Console ●  ")
+        else:
+            # Route to chat tab — clear the dot if we write chat
+            self.chat.config(state=tk.NORMAL)
+            if self.chat.index(tk.END).strip() != "1.0":
+                self.chat.insert(tk.END, "\n")
+            tag = {"You": "you", "CooperBot": "bot", "You (text)": "text"}.get(speaker, "")
+            self.chat.insert(tk.END, f"{speaker}: ", tag)
+            self.chat.insert(tk.END, text)
+            self.chat.config(state=tk.DISABLED)
+            self.chat.see(tk.END)
+
 
     # ------------------------------------------------------------------
     # Recording
@@ -375,6 +539,7 @@ class CooperBotGUI:
 
     def _start_recording(self):
         self._set_state("RECORDING")
+        _beep(880, 0.07)   # high pip — recording starting
         self._rec_start = time.time()
         self._rec_buffer = sd.rec(
             int(SAMPLE_RATE * 30),   # max 30 seconds
@@ -404,6 +569,7 @@ class CooperBotGUI:
         elapsed = time.time() - self._rec_start
         self._recording = False
         sd.stop()
+        _beep(520, 0.07)   # lower pip — recording sent
 
         frames = min(int(elapsed * SAMPLE_RATE), int(SAMPLE_RATE * 30))
         audio = self._rec_buffer[:frames].copy()
@@ -443,8 +609,9 @@ class CooperBotGUI:
                 if resp.status_code == 200:
                     transcription = resp.headers.get("X-Transcription", "")
                     self._ui_queue.put(("chat", ("You", transcription or "(no transcription)")))
+                    self._start_image_poller()
                     self._play_stream(resp.iter_content(chunk_size=4096))
-                    self._after_play_check()
+                    self._after_play()
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
 
@@ -478,8 +645,9 @@ class CooperBotGUI:
                     stream=True,
                 )
                 if resp.status_code == 200:
+                    self._start_image_poller()
                     self._play_stream(resp.iter_content(chunk_size=4096))
-                    self._after_play_check()
+                    self._after_play()
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
             except requests.RequestException as e:
@@ -569,28 +737,44 @@ class CooperBotGUI:
     # Post-play face + image update
     # ------------------------------------------------------------------
 
-    def _after_play_check(self):
+    def _start_image_poller(self):
         """
-        Called from a background thread after audio playback finishes.
-        Polls the server for a pending image URL; if found, shows it in
-        the face panel and chat.  Otherwise briefly shows HAPPY then IDLE.
+        Start a background thread that polls for an image URL immediately
+        after the server response arrives — shows it as soon as it's ready,
+        even while audio is still playing.
         """
+        def _poll():
+            for _ in range(40):  # poll every 500 ms for up to 20 s
+                time.sleep(0.5)
+                try:
+                    r = requests.get(
+                        f"{SERVER_URL}/session/{SESSION_ID}/latest_image",
+                        timeout=3,
+                    )
+                    if r.status_code == 200:
+                        url = r.json().get("image_url", "")
+                        if url:
+                            self._ui_queue.put(("face_image_url", url))
+                            self._ui_queue.put(("image", url))
+                            return
+                except Exception:
+                    pass
+        threading.Thread(target=_poll, daemon=True).start()
+
+    def _after_play(self):
+        """After playback: fetch and display bot reply text, show HAPPY then IDLE."""
         try:
-            img_resp = requests.get(
-                f"{SERVER_URL}/session/{SESSION_ID}/latest_image",
-                timeout=5,
+            r = requests.get(
+                f"{SERVER_URL}/session/{SESSION_ID}/latest_reply", timeout=5,
             )
-            if img_resp.status_code == 200:
-                url = img_resp.json().get("image_url", "")
-                if url:
-                    self._ui_queue.put(("face_image_url", url))
-                    self._ui_queue.put(("image", url))
-                    return
+            if r.status_code == 200:
+                reply = r.json().get("reply", "")
+                if reply:
+                    self._ui_queue.put(("chat", ("CooperBot", reply)))
         except Exception:
             pass
-        # No image — show happy briefly
         self._ui_queue.put(("face_state", "HAPPY"))
-        time.sleep(1.5)
+        time.sleep(1.2)
         self._ui_queue.put(("face_state", "IDLE"))
 
     # ------------------------------------------------------------------

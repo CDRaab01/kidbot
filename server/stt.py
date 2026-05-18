@@ -20,7 +20,8 @@ class SpeechToText:
             audio_path,
             beam_size=1,
             language="en",
-            vad_filter=False,
+            vad_filter=True,
+            vad_parameters={"threshold": 0.2},  # permissive — catches quiet speech
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
         logger.info("Transcribed: %r", text)

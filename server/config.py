@@ -5,7 +5,7 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8765
 
 # Faster-Whisper STT
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # base/small/medium
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")  # tiny/base/small/medium
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 is fastest on CPU
 

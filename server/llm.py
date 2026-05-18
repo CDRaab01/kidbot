@@ -4,7 +4,7 @@ from typing import Iterator
 
 import ollama
 from .config import OLLAMA_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
-from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, SYSTEM_PROMPT,
+from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, get_system_prompt,
                          is_input_safe, is_output_safe)
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class LLMInterface:
         logger.info("LLM ready. Model: %s", OLLAMA_MODEL)
 
     def _build_messages(self, user_text: str, history: list | None) -> list:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": get_system_prompt()}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_text})

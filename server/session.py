@@ -16,6 +16,7 @@ class Session:
     messages: list = field(default_factory=list)
     last_active: float = field(default_factory=time.time)
     latest_image_url: str = ""
+    latest_reply: str = ""
 
 
 class SessionStore:
@@ -119,6 +120,18 @@ class SessionStore:
             return ""
         url, s.latest_image_url = s.latest_image_url, ""
         return url
+
+    def set_latest_reply(self, session_id: str, text: str) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.latest_reply = text
+
+    def get_and_clear_latest_reply(self, session_id: str) -> str:
+        s = self._sessions.get(session_id)
+        if not s:
+            return ""
+        text, s.latest_reply = s.latest_reply, ""
+        return text
 
     def clear(self, session_id: str):
         self._sessions.pop(session_id, None)

@@ -288,7 +288,9 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
 
     t.join()
     if full_parts:
-        _sessions.add_exchange(session_id, text, " ".join(full_parts))
+        full_reply = " ".join(full_parts)
+        _sessions.add_exchange(session_id, text, full_reply)
+        _sessions.set_latest_reply(session_id, full_reply)
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
         asyncio.ensure_future(_fetch_and_store_image(session_id, image_term))
@@ -305,6 +307,42 @@ async def _fetch_and_store_image(session_id: str, term: str) -> None:
 async def get_latest_image(session_id: str):
     """One-shot: returns and clears the latest image URL for a session."""
     return {"image_url": _sessions.get_and_clear_latest_image(session_id)}
+
+
+@app.get("/session/{session_id}/latest_reply")
+async def get_latest_reply(session_id: str):
+    """One-shot: returns and clears the latest bot reply text for a session."""
+    return {"reply": _sessions.get_and_clear_latest_reply(session_id)}
+
+
+@app.get("/settings/voices")
+async def list_voices():
+    """Return available TTS voice names."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    return {"voices": _tts.available_voices(), "current_voice": _tts.voice, "current_speed": _tts.speed}
+
+
+@app.post("/settings")
+async def update_settings(
+    request: Request,
+    voice: str = Form(default=""),
+    speed: str = Form(default=""),
+):
+    """Update TTS voice and/or speed at runtime."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    changes = {}
+    if voice:
+        _tts.set_voice(voice)
+        changes["voice"] = voice
+    if speed:
+        try:
+            _tts.set_speed(float(speed))
+            changes["speed"] = _tts.speed
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid speed value")
+    return {"status": "ok", "changes": changes}
 
 
 @app.post("/chat_text_stream")
