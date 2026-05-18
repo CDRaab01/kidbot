@@ -80,7 +80,7 @@ class TestSearchWikipedia:
             "2": _wiki_page(2, "https://upload.wikimedia.org/dog.jpg"),
         }
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
-            assert _search_wikipedia("cat", 500) == "https://upload.wikimedia.org/cat.jpg"
+            assert _search_wikipedia("cat", 500, frozenset()) == "https://upload.wikimedia.org/cat.jpg"
 
     def test_picks_lowest_index_when_multiple_pages(self):
         pages = {
@@ -89,7 +89,7 @@ class TestSearchWikipedia:
             "c": _wiki_page(2, "https://example.com/second.jpg"),
         }
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
-            assert _search_wikipedia("dog", 500) == "https://example.com/first.jpg"
+            assert _search_wikipedia("dog", 500, frozenset()) == "https://example.com/first.jpg"
 
     def test_skips_pages_without_thumbnail(self):
         pages = {
@@ -97,57 +97,72 @@ class TestSearchWikipedia:
             "2": _wiki_page(2, "https://example.com/second.jpg"),
         }
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
-            assert _search_wikipedia("tiger", 500) == "https://example.com/second.jpg"
+            assert _search_wikipedia("tiger", 500, frozenset()) == "https://example.com/second.jpg"
 
     def test_returns_none_when_no_thumbnails(self):
         pages = {"1": _wiki_page(1, ""), "2": _wiki_page(2, "")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
-            assert _search_wikipedia("obscure", 500) is None
+            assert _search_wikipedia("obscure", 500, frozenset()) is None
 
     def test_returns_none_on_missing_query_key(self):
         resp = MagicMock()
         resp.raise_for_status = MagicMock()
         resp.json.return_value = {}
         with patch("server.image_search.requests.get", return_value=resp):
-            assert _search_wikipedia("something", 500) is None
+            assert _search_wikipedia("something", 500, frozenset()) is None
 
     def test_returns_none_on_http_error(self):
         with patch("server.image_search.requests.get", return_value=_wiki_response({}, 404)):
-            assert _search_wikipedia("cat", 500) is None
+            assert _search_wikipedia("cat", 500, frozenset()) is None
 
     def test_returns_none_on_connection_error(self):
         from requests import ConnectionError as ReqConn
         with patch("server.image_search.requests.get", side_effect=ReqConn):
-            assert _search_wikipedia("cat", 500) is None
+            assert _search_wikipedia("cat", 500, frozenset()) is None
 
     def test_returns_none_on_timeout(self):
         from requests import Timeout
         with patch("server.image_search.requests.get", side_effect=Timeout):
-            assert _search_wikipedia("cat", 500) is None
+            assert _search_wikipedia("cat", 500, frozenset()) is None
 
     def test_size_param_forwarded(self):
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)) as m:
-            _search_wikipedia("lion", 300)
+            _search_wikipedia("lion", 300, frozenset())
         assert m.call_args[1]["params"]["pithumbsize"] == 300
 
     def test_term_included_in_params(self):
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)) as m:
-            _search_wikipedia("blue whale", 500)
+            _search_wikipedia("blue whale", 500, frozenset())
         assert m.call_args[1]["params"]["gsrsearch"] == "blue whale"
 
     def test_user_agent_header_sent(self):
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)) as m:
-            _search_wikipedia("elephant", 500)
+            _search_wikipedia("elephant", 500, frozenset())
         assert "CooperBot" in m.call_args[1]["headers"]["User-Agent"]
 
     def test_timeout_set(self):
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)) as m:
-            _search_wikipedia("cat", 500)
+            _search_wikipedia("cat", 500, frozenset())
         assert m.call_args[1]["timeout"] == image_search._TIMEOUT
+
+    def test_skips_excluded_url_and_returns_next(self):
+        pages = {
+            "1": _wiki_page(1, "https://upload.wikimedia.org/first.jpg"),
+            "2": _wiki_page(2, "https://upload.wikimedia.org/second.jpg"),
+        }
+        exclude = frozenset({"https://upload.wikimedia.org/first.jpg"})
+        with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
+            assert _search_wikipedia("cat", 500, exclude) == "https://upload.wikimedia.org/second.jpg"
+
+    def test_returns_none_when_all_urls_excluded(self):
+        pages = {"1": _wiki_page(1, "https://upload.wikimedia.org/only.jpg")}
+        exclude = frozenset({"https://upload.wikimedia.org/only.jpg"})
+        with patch("server.image_search.requests.get", return_value=_wiki_response(pages)):
+            assert _search_wikipedia("cat", 500, exclude) is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +173,7 @@ class TestSearchNasa:
     def test_returns_jpg_url_from_first_item(self):
         items = [_nasa_item("https://images-assets.nasa.gov/image/PIA123/PIA123~thumb.jpg")]
         with patch("server.image_search.requests.get", return_value=_nasa_response(items)):
-            assert _search_nasa("saturn", 500) == \
+            assert _search_nasa("saturn", 500, frozenset()) == \
                 "https://images-assets.nasa.gov/image/PIA123/PIA123~thumb.jpg"
 
     def test_skips_non_image_links(self):
@@ -170,32 +185,47 @@ class TestSearchNasa:
             "data": [],
         }
         with patch("server.image_search.requests.get", return_value=_nasa_response([item])):
-            assert _search_nasa("moon", 500) == "https://example.com/image.jpg"
+            assert _search_nasa("moon", 500, frozenset()) == "https://example.com/image.jpg"
 
     def test_returns_none_when_no_items(self):
         with patch("server.image_search.requests.get", return_value=_nasa_response([])):
-            assert _search_nasa("nothing", 500) is None
+            assert _search_nasa("nothing", 500, frozenset()) is None
 
     def test_returns_none_on_http_error(self):
         with patch("server.image_search.requests.get", return_value=_nasa_response([], 500)):
-            assert _search_nasa("mars", 500) is None
+            assert _search_nasa("mars", 500, frozenset()) is None
 
     def test_returns_none_on_timeout(self):
         from requests import Timeout
         with patch("server.image_search.requests.get", side_effect=Timeout):
-            assert _search_nasa("rocket", 500) is None
+            assert _search_nasa("rocket", 500, frozenset()) is None
 
     def test_term_included_in_params(self):
         items = [_nasa_item("https://example.com/img.jpg")]
         with patch("server.image_search.requests.get", return_value=_nasa_response(items)) as m:
-            _search_nasa("Jupiter planet", 500)
+            _search_nasa("Jupiter planet", 500, frozenset())
         assert m.call_args[1]["params"]["q"] == "Jupiter planet"
 
     def test_media_type_is_image(self):
         items = [_nasa_item("https://example.com/img.jpg")]
         with patch("server.image_search.requests.get", return_value=_nasa_response(items)) as m:
-            _search_nasa("nebula", 500)
+            _search_nasa("nebula", 500, frozenset())
         assert m.call_args[1]["params"]["media_type"] == "image"
+
+    def test_skips_excluded_url_and_returns_next(self):
+        items = [
+            _nasa_item("https://example.com/first.jpg"),
+            _nasa_item("https://example.com/second.jpg"),
+        ]
+        exclude = frozenset({"https://example.com/first.jpg"})
+        with patch("server.image_search.requests.get", return_value=_nasa_response(items)):
+            assert _search_nasa("space", 500, exclude) == "https://example.com/second.jpg"
+
+    def test_returns_none_when_all_urls_excluded(self):
+        items = [_nasa_item("https://example.com/only.jpg")]
+        exclude = frozenset({"https://example.com/only.jpg"})
+        with patch("server.image_search.requests.get", return_value=_nasa_response(items)):
+            assert _search_nasa("space", 500, exclude) is None
 
 
 # ---------------------------------------------------------------------------
@@ -206,13 +236,13 @@ class TestSearchiNaturalist:
     def test_returns_medium_url(self):
         taxa = [_inat_taxon(medium_url="https://inaturalist.org/photos/1/medium.jpg")]
         with patch("server.image_search.requests.get", return_value=_inat_response(taxa)):
-            assert _search_inaturalist("tiger", 500) == \
+            assert _search_inaturalist("tiger", 500, frozenset()) == \
                 "https://inaturalist.org/photos/1/medium.jpg"
 
     def test_falls_back_to_square_url(self):
         taxa = [_inat_taxon(square_url="https://inaturalist.org/photos/1/square.jpg")]
         with patch("server.image_search.requests.get", return_value=_inat_response(taxa)):
-            assert _search_inaturalist("frog", 500) == \
+            assert _search_inaturalist("frog", 500, frozenset()) == \
                 "https://inaturalist.org/photos/1/square.jpg"
 
     def test_skips_taxa_without_photo(self):
@@ -221,27 +251,43 @@ class TestSearchiNaturalist:
             _inat_taxon(medium_url="https://inaturalist.org/photos/2/medium.jpg"),
         ]
         with patch("server.image_search.requests.get", return_value=_inat_response(taxa)):
-            assert _search_inaturalist("shark", 500) == \
+            assert _search_inaturalist("shark", 500, frozenset()) == \
                 "https://inaturalist.org/photos/2/medium.jpg"
 
     def test_returns_none_when_no_results(self):
         with patch("server.image_search.requests.get", return_value=_inat_response([])):
-            assert _search_inaturalist("xyzzy", 500) is None
+            assert _search_inaturalist("xyzzy", 500, frozenset()) is None
 
     def test_returns_none_on_http_error(self):
         with patch("server.image_search.requests.get", return_value=_inat_response([], 503)):
-            assert _search_inaturalist("eagle", 500) is None
+            assert _search_inaturalist("eagle", 500, frozenset()) is None
 
     def test_returns_none_on_timeout(self):
         from requests import Timeout
         with patch("server.image_search.requests.get", side_effect=Timeout):
-            assert _search_inaturalist("whale", 500) is None
+            assert _search_inaturalist("whale", 500, frozenset()) is None
 
     def test_term_included_in_params(self):
         taxa = [_inat_taxon(medium_url="https://inaturalist.org/p.jpg")]
         with patch("server.image_search.requests.get", return_value=_inat_response(taxa)) as m:
-            _search_inaturalist("red panda", 500)
+            _search_inaturalist("red panda", 500, frozenset())
         assert m.call_args[1]["params"]["q"] == "red panda"
+
+    def test_skips_excluded_url_and_returns_next(self):
+        taxa = [
+            _inat_taxon(medium_url="https://inaturalist.org/photos/1/medium.jpg"),
+            _inat_taxon(medium_url="https://inaturalist.org/photos/2/medium.jpg"),
+        ]
+        exclude = frozenset({"https://inaturalist.org/photos/1/medium.jpg"})
+        with patch("server.image_search.requests.get", return_value=_inat_response(taxa)):
+            assert _search_inaturalist("frog", 500, exclude) == \
+                "https://inaturalist.org/photos/2/medium.jpg"
+
+    def test_returns_none_when_all_urls_excluded(self):
+        taxa = [_inat_taxon(medium_url="https://inaturalist.org/photos/1/medium.jpg")]
+        exclude = frozenset({"https://inaturalist.org/photos/1/medium.jpg"})
+        with patch("server.image_search.requests.get", return_value=_inat_response(taxa)):
+            assert _search_inaturalist("frog", 500, exclude) is None
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +344,7 @@ class TestFetchImageUrl:
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
             fetch_image_url("elephant", size=300)
-        mock_wiki.assert_called_once_with("elephant", 300)
+        mock_wiki.assert_called_once_with("elephant", 300, frozenset())
 
     def test_default_size_is_500(self):
         with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
@@ -306,7 +352,7 @@ class TestFetchImageUrl:
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
             fetch_image_url("elephant")
-        mock_wiki.assert_called_once_with("elephant", 500)
+        mock_wiki.assert_called_once_with("elephant", 500, frozenset())
 
     def test_source_exception_does_not_propagate(self):
         with patch.object(image_search, "_search_wikipedia", side_effect=RuntimeError("boom")), \
@@ -315,3 +361,35 @@ class TestFetchImageUrl:
             # Should not raise; should fall through to nasa
             result = fetch_image_url("test")
         assert result == "nasa.jpg"
+
+    def test_exclude_urls_forwarded_as_frozenset(self):
+        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
+             patch.object(image_search, "_search_inaturalist", return_value=None):
+            mock_wiki.return_value = "wiki.jpg"
+            fetch_image_url("black hole", exclude_urls=["https://example.com/old.jpg"])
+        _, _, called_exclude = mock_wiki.call_args[0]
+        assert isinstance(called_exclude, frozenset)
+        assert "https://example.com/old.jpg" in called_exclude
+
+    def test_none_exclude_urls_treated_as_empty(self):
+        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
+             patch.object(image_search, "_search_inaturalist", return_value=None):
+            mock_wiki.return_value = "wiki.jpg"
+            fetch_image_url("black hole", exclude_urls=None)
+        _, _, called_exclude = mock_wiki.call_args[0]
+        assert called_exclude == frozenset()
+
+    def test_skips_excluded_wikipedia_url_via_fetch(self):
+        pages_first = {"1": _wiki_page(1, "https://upload.wikimedia.org/first.jpg")}
+        pages_second = {
+            "1": _wiki_page(1, "https://upload.wikimedia.org/first.jpg"),
+            "2": _wiki_page(2, "https://upload.wikimedia.org/second.jpg"),
+        }
+        exclude = frozenset({"https://upload.wikimedia.org/first.jpg"})
+        with patch.object(image_search, "_search_nasa",        return_value=None), \
+             patch.object(image_search, "_search_inaturalist", return_value=None), \
+             patch("server.image_search.requests.get", return_value=_wiki_response(pages_second)):
+            result = fetch_image_url("galaxy", exclude_urls=list(exclude))
+        assert result == "https://upload.wikimedia.org/second.jpg"

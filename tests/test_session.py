@@ -153,3 +153,32 @@ class TestLatestImage:
     def test_default_latest_image_url_is_empty(self):
         self.store.get_history("s1")
         assert self.store.get_and_clear_latest_image("s1") == ""
+
+    def test_set_latest_image_adds_to_shown_urls(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        assert "https://example.com/a.jpg" in self.store.get_shown_image_urls("s1")
+
+    def test_shown_urls_accumulate_across_multiple_images(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        self.store.set_latest_image("s1", "https://example.com/b.jpg")
+        shown = self.store.get_shown_image_urls("s1")
+        assert "https://example.com/a.jpg" in shown
+        assert "https://example.com/b.jpg" in shown
+
+    def test_shown_urls_no_duplicates(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        assert self.store.get_shown_image_urls("s1").count("https://example.com/a.jpg") == 1
+
+    def test_get_shown_image_urls_returns_empty_for_unknown_session(self):
+        assert self.store.get_shown_image_urls("nobody") == []
+
+    def test_get_shown_image_urls_returns_copy(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        shown = self.store.get_shown_image_urls("s1")
+        shown.append("https://mutated.com/x.jpg")
+        assert len(self.store.get_shown_image_urls("s1")) == 1  # original unchanged

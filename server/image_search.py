@@ -8,6 +8,9 @@ Sources (in priority order):
 
 All three sources are free, require no API key, and serve educational content.
 Sources run in parallel; the highest-priority result wins.
+
+Pass `exclude_urls` to skip previously shown images within the same session,
+so repeated requests for the same topic surface fresh content.
 """
 import concurrent.futures
 import logging
@@ -23,7 +26,7 @@ _TIMEOUT = 5  # seconds per source
 # Source implementations
 # ---------------------------------------------------------------------------
 
-def _search_wikipedia(term: str, size: int) -> str | None:
+def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
     """Wikipedia pageimages API — broad encyclopedic coverage."""
     try:
         resp = requests.get(
@@ -32,7 +35,7 @@ def _search_wikipedia(term: str, size: int) -> str | None:
                 "action": "query",
                 "generator": "search",
                 "gsrsearch": term,
-                "gsrlimit": 5,
+                "gsrlimit": 10,
                 "prop": "pageimages",
                 "format": "json",
                 "pithumbsize": size,
@@ -45,14 +48,14 @@ def _search_wikipedia(term: str, size: int) -> str | None:
         pages = resp.json().get("query", {}).get("pages", {}).values()
         for page in sorted(pages, key=lambda p: p.get("index", 99)):
             url = page.get("thumbnail", {}).get("source", "")
-            if url:
+            if url and url not in exclude:
                 return url
     except Exception as exc:
         logger.warning("Wikipedia image search failed for %r: %s", term, exc)
     return None
 
 
-def _search_nasa(term: str, size: int) -> str | None:
+def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
     """NASA Image and Video Library — space, science, engineering imagery."""
     try:
         resp = requests.get(
@@ -66,19 +69,21 @@ def _search_nasa(term: str, size: int) -> str | None:
         for item in items:
             for link in item.get("links", []):
                 href = link.get("href", "")
-                if href and any(href.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif")):
+                if (href
+                        and href not in exclude
+                        and any(href.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif"))):
                     return href
     except Exception as exc:
         logger.warning("NASA image search failed for %r: %s", term, exc)
     return None
 
 
-def _search_inaturalist(term: str, size: int) -> str | None:
+def _search_inaturalist(term: str, size: int, exclude: frozenset) -> str | None:
     """iNaturalist taxa — animals, plants, insects, and nature photography."""
     try:
         resp = requests.get(
             "https://api.inaturalist.org/v1/taxa",
-            params={"q": term, "per_page": 5},
+            params={"q": term, "per_page": 10},
             headers=_HEADERS,
             timeout=_TIMEOUT,
         )
@@ -86,7 +91,7 @@ def _search_inaturalist(term: str, size: int) -> str | None:
         for result in resp.json().get("results", []):
             photo = result.get("default_photo") or {}
             url = photo.get("medium_url") or photo.get("square_url", "")
-            if url:
+            if url and url not in exclude:
                 return url
     except Exception as exc:
         logger.warning("iNaturalist image search failed for %r: %s", term, exc)
@@ -97,20 +102,27 @@ def _search_inaturalist(term: str, size: int) -> str | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def fetch_image_url(term: str, size: int = 500) -> str | None:
+def fetch_image_url(
+    term: str,
+    size: int = 500,
+    exclude_urls: list[str] | None = None,
+) -> str | None:
     """
     Search all kid-friendly image sources in parallel.
     Returns the highest-priority source result, or None if all sources fail.
 
     Priority: Wikipedia → NASA → iNaturalist
+
+    `exclude_urls` — URLs already shown in this session; each source skips
+    them so the child gets fresh content when requesting more on the same topic.
+
     Sources are resolved by name at call time so they can be patched in tests.
     """
+    exclude = frozenset(exclude_urls or [])
     sources = [_search_wikipedia, _search_nasa, _search_inaturalist]
-    results: dict[int, str | None] = {}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as executor:
-        # Key by index so priority order is preserved regardless of completion order
-        indexed = {i: executor.submit(src, term, size) for i, src in enumerate(sources)}
+        indexed = {i: executor.submit(src, term, size, exclude) for i, src in enumerate(sources)}
         done, _ = concurrent.futures.wait(indexed.values(), timeout=8)
 
     for i, src in enumerate(sources):
