@@ -45,7 +45,7 @@ def _init_device():
     try:
         from luma.lcd.device import ili9341
         from luma.core.interface.serial import spi
-        from pi_client.config import DISPLAY_DC, DISPLAY_RST, DISPLAY_BL, DISPLAY_SPI_PORT
+        from pi_client.config import DISPLAY_DC, DISPLAY_RST, DISPLAY_BL, DISPLAY_SPI_PORT, DISPLAY_FPS
         serial = spi(
             port=DISPLAY_SPI_PORT,
             device=0,
@@ -159,7 +159,7 @@ def _draw_circle_eyes(draw, lx, rx, y, r=22, color=None):
 
 
 def _draw_idle_eyes(draw, lx, rx, y, frame):
-    """Normal eyes with slow blink every ~4.5 s (at 10 fps = 45 frames)."""
+    """Normal eyes with slow blink every ~45 frames (4.5 s at 10 fps, 5.6 s at 8 fps)."""
     blinking = (frame % 45) in (42, 43, 44)
     r = 22
     for ex in (lx, rx):
@@ -321,11 +321,14 @@ class DisplayManager:
         self._lock = threading.Lock()
         self._running = True
 
+        from pi_client.config import DISPLAY_FPS
+        self._frame_sleep = 1.0 / max(1, DISPLAY_FPS)
+
         self._render_thread = threading.Thread(target=self._animate, daemon=True, name="display-render")
         self._battery_thread = threading.Thread(target=self._poll_battery, daemon=True, name="display-battery")
         self._render_thread.start()
         self._battery_thread.start()
-        logger.info("DisplayManager started (device=%s)", "hardware" if self._device else "headless")
+        logger.info("DisplayManager started (device=%s, fps=%d)", "hardware" if self._device else "headless", DISPLAY_FPS)
 
     # ------------------------------------------------------------------
     # Public API
@@ -425,7 +428,7 @@ class DisplayManager:
                     logger.debug("Display render error: %s", exc)
 
             frame = (frame + 1) % 1000
-            time.sleep(0.1)
+            time.sleep(self._frame_sleep)
 
     def _poll_battery(self) -> None:
         while self._running:
