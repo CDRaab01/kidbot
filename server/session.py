@@ -17,6 +17,7 @@ class Session:
     last_active: float = field(default_factory=time.time)
     latest_image_url: str = ""
     latest_reply: str = ""
+    shown_image_urls: list = field(default_factory=list)  # dedup across session, not persisted
 
 
 class SessionStore:
@@ -113,6 +114,12 @@ class SessionStore:
         s = self._sessions.get(session_id)
         if s:
             s.latest_image_url = url
+            if url not in s.shown_image_urls:
+                s.shown_image_urls.append(url)
+
+    def get_shown_image_urls(self, session_id: str) -> list[str]:
+        s = self._sessions.get(session_id)
+        return list(s.shown_image_urls) if s else []
 
     def get_and_clear_latest_image(self, session_id: str) -> str:
         s = self._sessions.get(session_id)

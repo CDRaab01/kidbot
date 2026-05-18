@@ -32,7 +32,7 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
 │                         KidBot System                          │
 │                                                                │
 │    ┌──────────────────────────┐       ┌────────────────────┐   │
-│    │   Raspberry Pi Zero 2W   │       │    Server (PC)     │   │
+│    │  Raspberry Pi Zero WH/2W  │       │    Server (PC)     │   │
 │    │                          │  WiFi │                    │   │
 │    │  [Button] ─► [LED]       │◄─────►│  Whisper STT       │   │
 │    │  [ReSpeaker Mic HAT]     │  LAN  │  Gemma 3 4B LLM   │   │
@@ -59,13 +59,13 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
 
 | Component | Model | Notes |
 |---|---|---|
-| Single-board computer | Raspberry Pi Zero 2W | WiFi built-in |
+| Single-board computer | Pi Zero WH *or* Pi Zero 2W | WiFi built-in; same 40-pin header |
 | Microphone | ReSpeaker 2-Mic Pi HAT | Mounts on 40-pin header |
 | Display | Waveshare 2.4" Touch LCD (B) | ILI9341, 320×240, SPI |
 | Push button | Momentary tactile switch | Normally open, connects to GND |
 | LED | 5 mm LED + 220 Ω resistor | Status indicator |
 | Speaker | Any 3.5 mm passive speaker | Via ReSpeaker 3.5 mm jack |
-| Power | 5 V / 2 A USB micro | Pi Zero requirement |
+| Power | 5 V / 2.5 A USB micro | micro-USB power port on both models |
 | Server PC | Any x86-64 machine | Ubuntu / Windows / macOS |
 
 ### Server Minimum Specs
@@ -198,7 +198,7 @@ Home LAN  (192.168.1.0/24 example)
   └──────────────┘                 │ 802.11n/ac
                                    │
                           ┌────────▼──────────┐
-                          │  Pi Zero 2W       │
+                          │  Pi Zero WH/2W    │
                           │  192.168.1.xxx    │
                           └───────────────────┘
 
@@ -316,7 +316,11 @@ sudo systemctl status kidbot
 
 ### 6.1 Operating System
 
-Flash **Raspberry Pi OS Lite (64-bit)** to a microSD card using Raspberry Pi Imager. During imaging, configure:
+Flash **Raspberry Pi OS Lite (32-bit)** to a microSD card using Raspberry Pi Imager.
+
+> **Board note:** The Pi Zero WH (ARMv6/BCM2835) *cannot* boot a 64-bit OS — always use the 32-bit image. The Pi Zero 2W supports both; 32-bit is used here so one image works on either board.
+
+During imaging, configure:
 - Hostname: `kidbot`
 - SSH: enabled
 - WiFi SSID and password
@@ -456,7 +460,7 @@ curl -X POST http://localhost:8765/settings \
 ### GPIO Pin Map (BCM numbering)
 
 ```
-Raspberry Pi Zero 2W — 40-pin header
+Raspberry Pi Zero WH / Pi Zero 2W — 40-pin header (identical pinout)
 ─────────────────────────────────────────────────────────────────
 
   3V3  [1]  [2]  5V
@@ -789,6 +793,25 @@ alsamixer
 | Ollama timing out | Check `ollama ps` — model may have been unloaded |
 | Choppy streaming | Check WiFi signal strength on Pi |
 
+### Pi performance notes
+
+| Board | CPU | `DISPLAY_FPS` | Notes |
+|---|---|---|---|
+| Pi Zero WH | 1× ARMv6 @ 700 MHz | 8 (default) | Lower to 5 if audio crackles |
+| Pi Zero 2W | 4× ARMv8 @ 1 GHz | 10 | Raise for smoother animation |
+
+```bash
+# Override display frame rate
+export DISPLAY_FPS=10   # Pi Zero 2W
+export DISPLAY_FPS=5    # Pi Zero WH if audio crackles
+
+# Confirm the Pi is not throttling due to heat or low voltage
+vcgencmd get_throttled    # 0x0 = healthy; anything else = throttling
+vcgencmd measure_temp     # should be < 70 °C
+```
+
+> The Pi Zero WH cannot run a 64-bit OS. If you see `Kernel panic` or a blank screen on boot, verify you flashed the **32-bit** Raspberry Pi OS image.
+
 ### Rate limit errors (HTTP 429)
 
 The API enforces 5 requests/minute on chat endpoints. If testing rapidly, add delays between requests or use the test GUI which handles this gracefully.
@@ -853,4 +876,4 @@ cd /path/to/kidbot
 python -m pytest tests/ -v --tb=short
 ```
 
-All 168 tests should pass before deploying.
+All 207 tests should pass before deploying.

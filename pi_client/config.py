@@ -29,6 +29,7 @@ DISPLAY_SPI_PORT  = int(os.getenv("DISPLAY_SPI_PORT", "0"))
 _raw_rst = os.getenv("DISPLAY_RST", "")
 DISPLAY_RST       = int(_raw_rst) if _raw_rst.strip() else None  # None avoids LED_PIN=27 conflict
 IMAGE_DISPLAY_SECONDS = int(os.getenv("IMAGE_DISPLAY_SECONDS", "8"))
+DISPLAY_FPS       = int(os.getenv("DISPLAY_FPS", "8"))   # 8 fps suits Pi Zero WH single-core
 
 # Volume rocker (BCM numbering)
 VOL_UP_PIN   = int(os.getenv("VOL_UP_PIN",   "5"))   # physical pin 29

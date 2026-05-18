@@ -128,7 +128,8 @@ def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
     image_url = ""
     if image_term:
         logger.info("[%s] Fetching image for: %r", session_id, image_term)
-        image_url = fetch_image_url(image_term) or ""
+        shown = _sessions.get_shown_image_urls(session_id)
+        image_url = fetch_image_url(image_term, exclude_urls=shown) or ""
     return reply_text, image_url
 
 
@@ -297,7 +298,8 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
 
 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
-    url = await run_in_threadpool(fetch_image_url, term) or ""
+    shown = _sessions.get_shown_image_urls(session_id)
+    url = await run_in_threadpool(fetch_image_url, term, 500, shown) or ""
     if url:
         _sessions.set_latest_image(session_id, url)
         logger.info("[%s] Stored image URL for %r", session_id, term)
