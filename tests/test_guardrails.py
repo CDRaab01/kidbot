@@ -53,6 +53,20 @@ class TestGetSystemPrompt:
         assert _BASE_PROMPT in p1
         assert _BASE_PROMPT in p2
 
+    def test_prompt_instructs_verify_before_praising(self):
+        """Prompt must tell the model to check correctness before affirming."""
+        assert "verify" in _BASE_PROMPT.lower() or "never affirm a wrong answer" in _BASE_PROMPT.lower()
+
+    def test_prompt_contains_reverse_quiz_mode(self):
+        """Prompt must describe reverse-quiz behaviour so the child can be quizmaster."""
+        assert "REVERSE QUIZ" in _BASE_PROMPT
+
+    def test_reverse_quiz_instructs_bot_to_answer_not_ask(self):
+        assert "answering seat" in _BASE_PROMPT or "Cooper is the teacher" in _BASE_PROMPT
+
+    def test_math_mode_instructs_work_out_answer_first(self):
+        assert "work out the correct answer" in _BASE_PROMPT
+
 
 # --- is_input_safe ---
 
