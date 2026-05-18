@@ -34,3 +34,11 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 # Session persistence (optional SQLite backend)
 PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").lower() in ("1", "true", "yes")
 SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions.db")
+
+# API key authentication — set on both server and Pi; empty = disabled (dev mode)
+API_KEY = os.getenv("KIDBOT_API_KEY", "")
+
+# Logging
+LOG_FILE = os.getenv("LOG_FILE", "")   # path to log file; empty = stdout only
+LOG_MAX_BYTES = 10 * 1024 * 1024       # 10 MB per log file
+LOG_BACKUP_COUNT = 5                    # keep 5 rotated files

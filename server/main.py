@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 import re
 import tempfile
@@ -11,17 +12,31 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .config import PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR
+from .config import (API_KEY, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES,
+                     PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR)
 from .image_search import fetch_image_url
 from .llm import LLMInterface
 from .session import SessionStore
 from .stt import SpeechToText
 from .tts import TextToSpeech
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    if LOG_FILE:
+        from pathlib import Path
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        rh = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+        )
+        rh.setFormatter(fmt)
+        root.addHandler(rh)
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 _stt: SpeechToText | None = None
@@ -49,6 +64,15 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="CooperBot Server", version="0.4.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def _api_key_middleware(request: Request, call_next):
+    # /health is always exempt so the Pi can confirm connectivity before auth.
+    if API_KEY and request.url.path != "/health":
+        if request.headers.get("X-API-Key") != API_KEY:
+            return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
+    return await call_next(request)
 
 
 _IMAGE_TAG_RE = re.compile(r'\[IMAGE:\s*([^\]]+)\]', re.IGNORECASE)

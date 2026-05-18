@@ -1,28 +1,54 @@
 import logging
+import time
 import uuid
+
 import requests
-from .config import SERVER_URL
+
+from .config import API_KEY, SERVER_URL
 
 logger = logging.getLogger(__name__)
 
-CHAT_URL  = f"{SERVER_URL}/chat"
+CHAT_URL   = f"{SERVER_URL}/chat"
 HEALTH_URL = f"{SERVER_URL}/health"
 SPEAK_URL  = f"{SERVER_URL}/speak"
 
 # Canned phrases pre-fetched from the server at startup
-OFFLINE_MESSAGE  = "I can't reach my brain right now! Please check the connection and try again."
-ERROR_MESSAGE    = "Something went wrong on my end! Please try again in a moment."
+OFFLINE_MESSAGE = "I can't reach my brain right now! Please check the connection and try again."
+ERROR_MESSAGE   = "Something went wrong on my end! Please try again in a moment."
+
+_MAX_RETRIES   = 2
+_RETRY_DELAYS  = (1, 2)  # seconds between retry attempts
 
 
 class ServerClient:
     def __init__(self):
         self.session_id = str(uuid.uuid4())
         logger.info("Session ID: %s", self.session_id)
-
-        # Pre-fetch audio clips at startup so the Pi can speak even if the
-        # server later becomes temporarily unreachable mid-session
         self.offline_audio: bytes | None = None
-        self.error_audio: bytes | None = None
+        self.error_audio:   bytes | None = None
+
+    @property
+    def _headers(self) -> dict:
+        return {"X-API-Key": API_KEY} if API_KEY else {}
+
+    def _post_with_retry(self, url: str, **kwargs) -> "requests.Response | None":
+        """POST with automatic retry on connection errors; returns None on all failures."""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return requests.post(url, headers=self._headers, **kwargs)
+            except requests.Timeout:
+                logger.error("Request timed out (attempt %d/%d)", attempt + 1, _MAX_RETRIES + 1)
+                return None
+            except requests.ConnectionError as exc:
+                if attempt < _MAX_RETRIES:
+                    delay = _RETRY_DELAYS[attempt]
+                    logger.warning("Connection error (attempt %d/%d), retrying in %ds: %s",
+                                   attempt + 1, _MAX_RETRIES + 1, delay, exc)
+                    time.sleep(delay)
+                else:
+                    logger.error("Connection failed after %d attempts: %s",
+                                 _MAX_RETRIES + 1, exc)
+        return None
 
     def prefetch_audio(self):
         """Call once after confirming server is reachable."""
@@ -32,12 +58,9 @@ class ServerClient:
             logger.info("Error audio clips cached.")
 
     def _fetch_speech(self, text: str) -> bytes | None:
-        try:
-            resp = requests.post(SPEAK_URL, data={"text": text}, timeout=30)
-            if resp.status_code == 200:
-                return resp.content
-        except requests.RequestException as e:
-            logger.warning("Could not pre-fetch audio clip: %s", e)
+        resp = self._post_with_retry(SPEAK_URL, data={"text": text}, timeout=30)
+        if resp and resp.status_code == 200:
+            return resp.content
         return None
 
     def ping(self) -> bool:
@@ -49,22 +72,23 @@ class ServerClient:
 
     def send_audio(self, wav_path: str) -> bytes | None:
         """
-        Send WAV to server.
-        Returns MP3 bytes on success (including server-side spoken errors),
-        or None if the server is completely unreachable.
+        Send WAV to server, returning MP3 bytes on success.
+        Falls back to cached offline audio on network failure, or cached
+        error audio if the server responds with a non-200 status.
         """
-        try:
-            with open(wav_path, "rb") as f:
-                resp = requests.post(
-                    CHAT_URL,
-                    files={"audio": ("audio.wav", f, "audio/wav")},
-                    data={"session_id": self.session_id},
-                    timeout=60,
-                )
-            if resp.status_code == 200:
-                return resp.content
-            logger.error("Server returned %d: %s", resp.status_code, resp.text)
-            return self.error_audio  # play cached error clip
-        except requests.RequestException as e:
-            logger.error("Connection error: %s", e)
-            return self.offline_audio  # play cached offline clip
+        with open(wav_path, "rb") as f:
+            wav_data = f.read()
+
+        resp = self._post_with_retry(
+            CHAT_URL,
+            files={"audio": ("audio.wav", wav_data, "audio/wav")},
+            data={"session_id": self.session_id},
+            timeout=60,
+        )
+        if resp is None:
+            logger.warning("Server unreachable — playing offline clip.")
+            return self.offline_audio
+        if resp.status_code == 200:
+            return resp.content
+        logger.error("Server returned %d: %s", resp.status_code, resp.text)
+        return self.error_audio

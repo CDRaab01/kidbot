@@ -246,3 +246,47 @@ class TestClearSession:
             second_call_history = llm.respond.call_args_list[1][1].get("history") or \
                                   llm.respond.call_args_list[1][0][1] if len(llm.respond.call_args_list[1][0]) > 1 else []
         assert second_call_history == []
+
+
+# ---------------------------------------------------------------------------
+# API key authentication
+# ---------------------------------------------------------------------------
+
+class TestAPIKeyAuth:
+    def test_no_api_key_configured_all_requests_pass(self):
+        with patch("server.main.API_KEY", ""):
+            with _loaded_client() as (client, *_):
+                resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_missing_key_header_returns_401(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post("/chat_text", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 401
+
+    def test_wrong_key_returns_401(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post(
+                    "/chat_text",
+                    data={"text": "hi", "session_id": "s1"},
+                    headers={"X-API-Key": "wrong"},
+                )
+        assert resp.status_code == 401
+
+    def test_correct_key_passes(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.post(
+                    "/chat_text",
+                    data={"text": "hi", "session_id": "s1"},
+                    headers={"X-API-Key": "secret123"},
+                )
+        assert resp.status_code == 200
+
+    def test_health_always_exempt_from_api_key(self):
+        with patch("server.main.API_KEY", "secret123"):
+            with _loaded_client() as (client, *_):
+                resp = client.get("/health")
+        assert resp.status_code == 200

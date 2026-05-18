@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -8,12 +9,27 @@ import time
 from .audio import AudioManager
 from .button import PushToTalkButton
 from .client import ServerClient
-from .config import SERVER_URL
+from .config import LOG_FILE, SERVER_URL
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-)
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(message)s")
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    if LOG_FILE:
+        from pathlib import Path
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        rh = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5,
+        )
+        rh.setFormatter(fmt)
+        root.addHandler(rh)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 button = PushToTalkButton()

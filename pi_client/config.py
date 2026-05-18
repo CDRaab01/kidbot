@@ -15,3 +15,9 @@ MAX_RECORD_SECONDS = 10
 
 # The ReSpeaker 2-Mic HAT device name substring to match
 MIC_DEVICE_HINT = "seeed"
+
+# API key — must match KIDBOT_API_KEY on the server; empty = disabled
+API_KEY = os.getenv("KIDBOT_API_KEY", "")
+
+# Logging
+LOG_FILE = os.getenv("KIDBOT_LOG_FILE", "")   # path to log file; empty = stdout only
