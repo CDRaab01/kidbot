@@ -40,6 +40,13 @@ _stub(
     rec=MagicMock(),
 )
 
+# PIL (Pillow) — used by test_gui.py for image display
+_pil = _stub("PIL", Image=MagicMock, ImageTk=MagicMock)
+_stub("PIL.Image", Image=MagicMock)
+_stub("PIL.ImageTk", ImageTk=MagicMock)
+_pil.Image = sys.modules["PIL.Image"]
+_pil.ImageTk = sys.modules["PIL.ImageTk"]
+
 # tkinter — not available for Python 3.11 in this environment; stub for import only
 _TK_CONSTANTS = dict(
     X="x", Y="y", BOTH="both", LEFT="left", RIGHT="right",
