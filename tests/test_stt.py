@@ -50,7 +50,8 @@ class TestSpeechToText:
         call_kwargs = mock_model.transcribe.call_args[1]
         assert call_kwargs["beam_size"] == 1
         assert call_kwargs["language"] == "en"
-        assert call_kwargs["vad_filter"] is False
+        assert call_kwargs["vad_filter"] is True
+        assert call_kwargs["vad_parameters"]["threshold"] == 0.2
 
     def test_transcribe_passes_audio_path(self):
         stt, mock_model = self._make_stt([_make_segment("hi")])
