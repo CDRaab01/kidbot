@@ -90,3 +90,66 @@ class TestLLMInterface:
 
         with pytest.raises(RuntimeError, match="not found"):
             LLMInterface()
+
+
+def _make_stream_chunks(texts: list[str]):
+    """Build mock streaming chunks matching ollama's stream format."""
+    return [SimpleNamespace(message=SimpleNamespace(content=t)) for t in texts]
+
+
+class TestLLMInterfaceStream:
+    def setup_method(self):
+        _mock_list()
+
+    def test_stream_yields_complete_sentences(self):
+        _ollama_stub.chat.return_value = _make_stream_chunks(
+            ["Dino", "saurs are cool. ", "They were big!"]
+        )
+        llm = LLMInterface()
+        sentences = list(llm.respond_stream("Tell me about dinosaurs"))
+        assert "Dinosaurs are cool." in sentences
+        assert "They were big!" in sentences
+
+    def test_stream_unsafe_input_yields_redirect(self):
+        llm = LLMInterface()
+        _ollama_stub.chat.reset_mock()
+        sentences = list(llm.respond_stream("kill everyone"))
+        assert sentences == [REDIRECT_RESPONSE]
+        _ollama_stub.chat.assert_not_called()
+
+    def test_stream_unsafe_output_stops_and_yields_blocked(self):
+        # "I will kill you." should fail the output safety check
+        _ollama_stub.chat.return_value = _make_stream_chunks(
+            ["Hello there. ", "I will kill you. ", "More text."]
+        )
+        llm = LLMInterface()
+        sentences = list(llm.respond_stream("hi"))
+        assert OUTPUT_BLOCKED_RESPONSE in sentences
+        # Should stop after the blocked sentence
+        assert sentences[-1] == OUTPUT_BLOCKED_RESPONSE
+
+    def test_stream_short_fragment_merged_with_next(self):
+        # "Hi." is only 3 chars — should be merged, not yielded alone
+        _ollama_stub.chat.return_value = _make_stream_chunks(
+            ["Hi. ", "How are you doing today?"]
+        )
+        llm = LLMInterface()
+        sentences = list(llm.respond_stream("hello"))
+        # "Hi." alone should not appear as a separate chunk
+        assert "Hi." not in sentences
+
+    def test_stream_flushes_remainder_without_trailing_punctuation(self):
+        _ollama_stub.chat.return_value = _make_stream_chunks(
+            ["Cats are great pets"]  # no trailing punctuation
+        )
+        llm = LLMInterface()
+        sentences = list(llm.respond_stream("tell me about cats"))
+        assert any("Cats are great" in s for s in sentences)
+
+    def test_stream_passes_history_to_ollama(self):
+        _ollama_stub.chat.return_value = _make_stream_chunks(["Sure thing!"])
+        llm = LLMInterface()
+        history = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
+        list(llm.respond_stream("How are you?", history=history))
+        call_messages = _ollama_stub.chat.call_args[1]["messages"]
+        assert len(call_messages) == 4  # system + 2 history + user

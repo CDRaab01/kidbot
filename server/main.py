@@ -1,13 +1,17 @@
+import asyncio
 import logging
 import logging.handlers
 import os
 import re
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -235,6 +239,106 @@ async def clear_session(session_id: str):
     """Reset conversation history for a session."""
     _sessions.clear(session_id)
     return {"status": "cleared", "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Streaming endpoints — sentence-level TTS parallelism
+# ---------------------------------------------------------------------------
+
+async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, None]:
+    """
+    Async generator: yields one MP3 chunk per sentence.
+    LLM runs in a producer thread; TTS synthesises each sentence in the
+    thread pool as it arrives, so playback begins before the LLM finishes.
+    """
+    history = _sessions.get_history(session_id)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _producer():
+        try:
+            for sentence in _llm.respond_stream(text, history):
+                loop.call_soon_threadsafe(queue.put_nowait, ("s", sentence))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("err", str(exc)))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+    t = threading.Thread(target=_producer, daemon=True)
+    t.start()
+
+    full_parts: list[str] = []
+    while True:
+        kind, value = await queue.get()
+        if kind == "done":
+            break
+        if kind == "err":
+            logger.error("LLM stream error: %s", value)
+            break
+        clean = _IMAGE_TAG_RE.sub("", value).strip()
+        if not clean:
+            continue
+        full_parts.append(clean)
+        mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        yield mp3
+
+    t.join()
+    if full_parts:
+        _sessions.add_exchange(session_id, text, " ".join(full_parts))
+
+
+@app.post("/chat_text_stream")
+@limiter.limit("5/minute")
+async def chat_text_stream(
+    request: Request,
+    text: str = Form(...),
+    session_id: str = Form(default="default"),
+):
+    """Text → streaming LLM → sentence-by-sentence TTS → chunked MP3."""
+    if _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Empty text")
+    logger.info("[%s] Stream text input: %r", session_id, text)
+    return StreamingResponse(_sentence_stream(text, session_id), media_type="audio/mpeg")
+
+
+@app.post("/chat_stream")
+@limiter.limit("5/minute")
+async def chat_stream(
+    request: Request,
+    audio: UploadFile = File(...),
+    session_id: str = Form(default="default"),
+):
+    """WAV → STT → streaming LLM → sentence-by-sentence TTS → chunked MP3."""
+    if _stt is None or _llm is None or _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
+    audio_data = await audio.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=TEMP_DIR)
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(audio_data)
+        text = await run_in_threadpool(_stt.transcribe, tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+    if not text:
+        logger.info("[%s] Stream: no speech detected.", session_id)
+        mp3 = await run_in_threadpool(_tts.synthesize, SORRY_TRY_AGAIN)
+        return Response(content=mp3, media_type="audio/mpeg")
+
+    logger.info("[%s] Stream STT: %r", session_id, text)
+    return StreamingResponse(
+        _sentence_stream(text, session_id),
+        media_type="audio/mpeg",
+        headers={"X-Transcription": _safe_header(text)},
+    )
 
 
 if __name__ == "__main__":

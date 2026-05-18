@@ -92,3 +92,27 @@ class ServerClient:
             return resp.content
         logger.error("Server returned %d: %s", resp.status_code, resp.text)
         return self.error_audio
+
+    def send_audio_stream(self, wav_path: str):
+        """
+        Send WAV to /chat_stream. Returns a chunk iterator on success, or None on
+        any failure (caller should fall back to cached audio).
+        """
+        with open(wav_path, "rb") as f:
+            wav_data = f.read()
+        try:
+            resp = requests.post(
+                f"{SERVER_URL}/chat_stream",
+                files={"audio": ("audio.wav", wav_data, "audio/wav")},
+                data={"session_id": self.session_id},
+                headers=self._headers,
+                timeout=60,
+                stream=True,
+            )
+            if resp.status_code == 200:
+                return resp.iter_content(chunk_size=4096)
+            logger.error("Stream endpoint returned %d", resp.status_code)
+            return None
+        except requests.RequestException as exc:
+            logger.error("Stream connection error: %s", exc)
+            return None

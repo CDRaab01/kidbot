@@ -1,9 +1,16 @@
 import logging
+import re
+from typing import Iterator
+
 import ollama
 from .config import OLLAMA_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE
-from .guardrails import SYSTEM_PROMPT, REDIRECT_RESPONSE, OUTPUT_BLOCKED_RESPONSE, is_input_safe, is_output_safe
+from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, SYSTEM_PROMPT,
+                         is_input_safe, is_output_safe)
 
 logger = logging.getLogger(__name__)
+
+_SENT_BOUNDARY = re.compile(r'(?<=[.!?])\s+')
+_MIN_SENTENCE_LEN = 8  # merge fragments shorter than this with the next chunk
 
 
 class LLMInterface:
@@ -16,25 +23,22 @@ class LLMInterface:
             )
         logger.info("LLM ready. Model: %s", OLLAMA_MODEL)
 
+    def _build_messages(self, user_text: str, history: list | None) -> list:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
     def respond(self, user_text: str, history: list | None = None) -> str:
         if not is_input_safe(user_text):
             logger.warning("Blocked input: %r", user_text)
             return REDIRECT_RESPONSE
 
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-        if history:
-            messages.extend(history)
-
-        messages.append({"role": "user", "content": user_text})
-
         response = ollama.chat(
             model=OLLAMA_MODEL,
-            messages=messages,
-            options={
-                "temperature": LLM_TEMPERATURE,
-                "num_predict": LLM_MAX_TOKENS,
-            },
+            messages=self._build_messages(user_text, history),
+            options={"temperature": LLM_TEMPERATURE, "num_predict": LLM_MAX_TOKENS},
         )
 
         try:
@@ -52,3 +56,51 @@ class LLMInterface:
 
         logger.info("LLM reply: %r", reply)
         return reply
+
+    def respond_stream(self, user_text: str, history: list | None = None) -> Iterator[str]:
+        """Yield sentence-sized chunks from the LLM with per-sentence safety checks."""
+        if not is_input_safe(user_text):
+            logger.warning("Blocked input (stream): %r", user_text)
+            yield REDIRECT_RESPONSE
+            return
+
+        stream = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=self._build_messages(user_text, history),
+            options={"temperature": LLM_TEMPERATURE, "num_predict": LLM_MAX_TOKENS},
+            stream=True,
+        )
+
+        buffer = ""
+        for chunk in stream:
+            try:
+                buffer += chunk.message.content
+            except (AttributeError, TypeError):
+                continue
+
+            while True:
+                m = _SENT_BOUNDARY.search(buffer)
+                if not m:
+                    break
+                sentence = buffer[:m.start() + 1].strip()
+                buffer = buffer[m.end():]
+                if len(sentence) < _MIN_SENTENCE_LEN:
+                    buffer = sentence + " " + buffer
+                    break
+                safe, reason = is_output_safe(sentence)
+                if not safe:
+                    logger.warning("Stream output blocked — %s", reason)
+                    yield OUTPUT_BLOCKED_RESPONSE
+                    return
+                logger.info("LLM stream sentence: %r", sentence)
+                yield sentence
+
+        if buffer.strip():
+            remaining = buffer.strip()
+            safe, reason = is_output_safe(remaining)
+            if safe:
+                logger.info("LLM stream final: %r", remaining)
+                yield remaining
+            else:
+                logger.warning("Stream final output blocked — %s", reason)
+                yield OUTPUT_BLOCKED_RESPONSE

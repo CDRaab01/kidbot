@@ -54,15 +54,18 @@ def on_release():
 
     wav_path = audio.stop_recording()
     try:
-        mp3_data = client.send_audio(wav_path)
-        if mp3_data:
-            logger.info("Playing KidBot response...")
+        chunk_iter = client.send_audio_stream(wav_path)
+        if chunk_iter is not None:
+            logger.info("Streaming KidBot response...")
             button.led(True)
-            audio.play_mp3(mp3_data)
+            audio.play_mp3_stream(chunk_iter)
             button.led(False)
         else:
-            logger.warning("No response received from server.")
-            button.blink(count=5, interval=0.1)  # rapid blink = error
+            logger.warning("No response from server — playing fallback clip.")
+            button.blink(count=5, interval=0.1)
+            fallback = client.offline_audio or client.error_audio
+            if fallback:
+                audio.play_mp3(fallback)
     finally:
         os.unlink(wav_path)
         _busy_lock.release()

@@ -50,6 +50,7 @@ class CooperBotGUI:
         self._input_devices: list[dict] = self._get_input_devices()
         self._selected_device_index: int | None = None
         self._images: list = []  # keep PhotoImage refs alive (prevents GC)
+        self._current_proc = None  # active ffmpeg process for interrupt
 
         self._build_ui()
         self._bind_keys()
@@ -290,21 +291,17 @@ class CooperBotGUI:
 
                 with open(wav_path, "rb") as f:
                     resp = requests.post(
-                        f"{SERVER_URL}/chat",
+                        f"{SERVER_URL}/chat_stream",
                         files={"audio": ("audio.wav", f, "audio/wav")},
                         data={"session_id": SESSION_ID},
                         timeout=60,
+                        stream=True,
                     )
 
                 if resp.status_code == 200:
                     transcription = resp.headers.get("X-Transcription", "")
-                    reply         = resp.headers.get("X-Reply", "")
-                    image_url     = resp.headers.get("X-Image-Url", "")
                     self._ui_queue.put(("chat", ("You", transcription or "(no transcription)")))
-                    self._ui_queue.put(("chat", ("CooperBot", reply)))
-                    if image_url:
-                        self._ui_queue.put(("image", image_url))
-                    self._ui_queue.put(("play", resp.content))
+                    self._play_stream(resp.iter_content(chunk_size=4096))
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
 
@@ -332,17 +329,13 @@ class CooperBotGUI:
         def process():
             try:
                 resp = requests.post(
-                    f"{SERVER_URL}/chat_text",
+                    f"{SERVER_URL}/chat_text_stream",
                     data={"text": text, "session_id": SESSION_ID},
                     timeout=60,
+                    stream=True,
                 )
                 if resp.status_code == 200:
-                    reply     = resp.headers.get("X-Reply", "")
-                    image_url = resp.headers.get("X-Image-Url", "")
-                    self._ui_queue.put(("chat", ("CooperBot", reply)))
-                    if image_url:
-                        self._ui_queue.put(("image", image_url))
-                    self._ui_queue.put(("play", resp.content))
+                    self._play_stream(resp.iter_content(chunk_size=4096))
                 else:
                     self._ui_queue.put(("error", f"Server error {resp.status_code}"))
             except requests.RequestException as e:
@@ -383,20 +376,47 @@ class CooperBotGUI:
     # Playback
     # ------------------------------------------------------------------
 
-    def _play_audio(self, mp3_data: bytes):
-        self._set_state("PLAYING")
-        proc = subprocess.run(
+    def _play_stream(self, chunk_iter):
+        """Pipe streaming MP3 chunks through ffmpeg and play via sounddevice OutputStream."""
+        self._ui_queue.put(("state", "PLAYING"))
+        proc = subprocess.Popen(
             ["ffmpeg", "-i", "pipe:0", "-f", "s16le",
              "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", "pipe:1"],
-            input=mp3_data,
-            capture_output=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        samples = np.frombuffer(proc.stdout, dtype=np.int16)
-        sd.play(samples, samplerate=22050)
-        sd.wait()
+        self._current_proc = proc
+
+        def _feed():
+            try:
+                for chunk in chunk_iter:
+                    if proc.stdin.closed:
+                        break
+                    proc.stdin.write(chunk)
+            except (BrokenPipeError, OSError):
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        threading.Thread(target=_feed, daemon=True).start()
+
+        with sd.OutputStream(samplerate=22050, channels=1, dtype="int16") as out_stream:
+            while True:
+                pcm = proc.stdout.read(4096)
+                if not pcm:
+                    break
+                out_stream.write(np.frombuffer(pcm, dtype=np.int16))
+
+        proc.wait()
+        self._current_proc = None
         self._ui_queue.put(("state", "IDLE"))
 
     def _interrupt_playback(self):
+        if self._current_proc:
+            self._current_proc.kill()
+            self._current_proc = None
         sd.stop()
         self._set_state("IDLE")
         self._log("System", "Interrupted.")
@@ -410,9 +430,7 @@ class CooperBotGUI:
             while True:
                 item = self._ui_queue.get_nowait()
                 kind = item[0]
-                if kind == "play":
-                    threading.Thread(target=self._play_audio, args=(item[1],), daemon=True).start()
-                elif kind == "image":
+                if kind == "image":
                     threading.Thread(target=self._show_image, args=(item[1],), daemon=True).start()
                 elif kind == "chat":
                     _, (speaker, text) = item
