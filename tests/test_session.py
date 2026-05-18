@@ -1,3 +1,4 @@
+import sqlite3
 import time
 from unittest.mock import patch
 
@@ -66,3 +67,62 @@ class TestSessionStore:
         h1.append({"role": "user", "content": "injected"})
         h2 = self.store.get_history("s1")
         assert len(h2) == 2  # internal state unchanged
+
+
+class TestSQLiteSessionStore:
+    def test_add_exchange_persisted_and_reloaded(self, tmp_path):
+        db = str(tmp_path / "sessions.db")
+        store1 = SessionStore(db_path=db)
+        store1.add_exchange("s1", "hello", "hi there")
+
+        store2 = SessionStore(db_path=db)
+        history = store2.get_history("s1")
+        assert history == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+    def test_clear_removes_from_db(self, tmp_path):
+        db = str(tmp_path / "sessions.db")
+        store1 = SessionStore(db_path=db)
+        store1.add_exchange("s1", "hi", "hello")
+        store1.clear("s1")
+
+        store2 = SessionStore(db_path=db)
+        assert store2.get_history("s1") == []
+
+    def test_expired_sessions_not_reloaded(self, tmp_path):
+        db = str(tmp_path / "sessions.db")
+        store1 = SessionStore(db_path=db)
+        store1.add_exchange("s1", "hi", "hello")
+
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "UPDATE sessions SET last_active = ? WHERE session_id = 's1'",
+                (time.time() - SESSION_TIMEOUT - 10,),
+            )
+
+        store2 = SessionStore(db_path=db)
+        assert "s1" not in store2._sessions
+
+    def test_multiple_sessions_all_persisted(self, tmp_path):
+        db = str(tmp_path / "sessions.db")
+        store1 = SessionStore(db_path=db)
+        store1.add_exchange("alice", "hi", "hello alice")
+        store1.add_exchange("bob", "hey", "hello bob")
+
+        store2 = SessionStore(db_path=db)
+        assert store2.get_history("alice")[0]["content"] == "hi"
+        assert store2.get_history("bob")[0]["content"] == "hey"
+
+    def test_db_file_created_in_subdirectory(self, tmp_path):
+        db = str(tmp_path / "subdir" / "sessions.db")
+        store = SessionStore(db_path=db)
+        store.add_exchange("s1", "hi", "hello")
+        import os
+        assert os.path.exists(db)
+
+    def test_no_db_path_uses_in_memory_only(self):
+        store = SessionStore(db_path=None)
+        store.add_exchange("s1", "hi", "hello")
+        assert store._db_path is None

@@ -5,10 +5,13 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from .config import SERVER_HOST, SERVER_PORT, TEMP_DIR
+from .config import PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR
 from .image_search import fetch_image_url
 from .llm import LLMInterface
 from .session import SessionStore
@@ -24,7 +27,7 @@ logger = logging.getLogger(__name__)
 _stt: SpeechToText | None = None
 _llm: LLMInterface | None = None
 _tts: TextToSpeech | None = None
-_sessions = SessionStore()
+_sessions = SessionStore(db_path=SESSION_DB_PATH if PERSIST_SESSIONS else None)
 
 SORRY_TRY_AGAIN  = "Hmm, I didn't quite catch that! Could you try saying it again?"
 SORRY_CANT_THINK = "Oops, I got a bit muddled! Give me a moment and try again."
@@ -42,7 +45,10 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down.")
 
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="CooperBot Server", version="0.4.0", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 _IMAGE_TAG_RE = re.compile(r'\[IMAGE:\s*([^\]]+)\]', re.IGNORECASE)
@@ -108,7 +114,8 @@ async def health():
 
 
 @app.post("/speak")
-async def speak(text: str = Form(...)):
+@limiter.limit("20/minute")
+async def speak(request: Request, text: str = Form(...)):
     """Convert text to MP3. Used by the Pi to pre-fetch error audio clips."""
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
@@ -116,7 +123,9 @@ async def speak(text: str = Form(...)):
 
 
 @app.post("/chat")
+@limiter.limit("5/minute")
 async def chat(
+    request: Request,
     audio: UploadFile = File(...),
     session_id: str = Form(default="default"),
 ):
@@ -169,7 +178,9 @@ async def chat(
 
 
 @app.post("/chat_text")
+@limiter.limit("5/minute")
 async def chat_text(
+    request: Request,
     text: str = Form(...),
     session_id: str = Form(default="default"),
 ):

@@ -30,3 +30,7 @@ except ValueError:
 
 TEMP_DIR = Path("server/temp")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# Session persistence (optional SQLite backend)
+PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").lower() in ("1", "true", "yes")
+SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions.db")

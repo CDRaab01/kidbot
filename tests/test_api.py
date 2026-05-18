@@ -13,7 +13,14 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from server.main import app
+from server.main import app, limiter
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Clear rate limiter storage between tests so limits don't accumulate."""
+    limiter._storage.reset()
+    yield
 
 
 # ---------------------------------------------------------------------------
