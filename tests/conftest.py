@@ -16,9 +16,6 @@ def _stub(name: str, **attrs) -> ModuleType:
     return mod
 
 
-# ollama — used by server/llm.py
-_stub("ollama", list=MagicMock(), chat=MagicMock())
-
 # faster_whisper — used by server/stt.py
 # Use a MagicMock() instance so WhisperModel(path, ...) doesn't pick up spec=str
 _stub("faster_whisper", WhisperModel=MagicMock())

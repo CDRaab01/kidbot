@@ -9,14 +9,18 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")  # tiny/base/small/medium
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 is fastest on CPU
 
-# Gemma 3 4B via Ollama
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "kidbot")   # name given when we import the GGUF
-LLM_MAX_TOKENS = 200
-LLM_TEMPERATURE = 0.7
+# LLM via LM Studio (OpenAI-compatible)
+LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
+LM_STUDIO_MODEL    = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
+LLM_MAX_TOKENS     = 500
+# Maximum number of past exchanges (user+assistant pairs) to include in context.
+# Keeps the prompt from growing unbounded and crowding out the response budget.
+LLM_MAX_HISTORY_EXCHANGES = int(os.getenv("LLM_MAX_HISTORY", "8"))
+LLM_TEMPERATURE    = 0.7
 
-# Child's name
-CHILD_NAME = os.getenv("CHILD_NAME", "")  # set CHILD_NAME env var or edit here
+# Child's name — change CHILD here (or set CHILD_NAME env var) to reuse this bot for another child
+CHILD = os.getenv("CHILD_NAME", "Cooper")
+BOT_NAME = f"{CHILD}Bot"
 
 # Kokoro ONNX TTS
 KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL", "server/models/kokoro-v1.0.onnx")

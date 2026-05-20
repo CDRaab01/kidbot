@@ -16,7 +16,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .config import (API_KEY, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES,
+from .config import (API_KEY, BOT_NAME, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTES,
                      PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR)
 from .image_search import fetch_image_url
 from .llm import LLMInterface
@@ -59,13 +59,13 @@ async def lifespan(app: FastAPI):
     _stt = SpeechToText()
     _llm = LLMInterface()
     _tts = TextToSpeech()
-    logger.info("All models loaded. CooperBot server is ready.")
+    logger.info("All models loaded. %s server is ready.", BOT_NAME)
     yield
     logger.info("Shutting down.")
 
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="CooperBot Server", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title=f"{BOT_NAME} Server", version="0.4.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -80,6 +80,36 @@ async def _api_key_middleware(request: Request, call_next):
 
 
 _IMAGE_TAG_RE = re.compile(r'\[IMAGE:\s*([^\]]+)\]', re.IGNORECASE)
+
+# Detect when the user explicitly asks to see a picture of something,
+# and extract the subject so we can search even if the model forgets the tag.
+_IMAGE_REQUEST_RE = re.compile(
+    r'\b(show me|see|picture|image|photo)\b',
+    re.IGNORECASE,
+)
+_IMAGE_SUBJECT_RE = re.compile(
+    r'(?:picture|image|photo)\s+of\s+(.+?)[\?\.\!]?\s*$|'
+    r'see\s+(?:a\s+|an\s+)?(?:picture|image|photo)\s+of\s+(.+?)[\?\.\!]?\s*$|'
+    r'show\s+me\s+(?:a\s+|an\s+)?(?:picture|image|photo)\s+of\s+(.+?)[\?\.\!]?\s*$|'
+    r'what does\s+(.+?)\s+look like',
+    re.IGNORECASE,
+)
+
+
+def _fallback_image_term(text: str) -> str | None:
+    """
+    If the user explicitly asked for a picture, extract the subject.
+    Used when the model response contained no [IMAGE: ...] tag.
+    Returns a search term string, or None if no image was requested.
+    """
+    if not _IMAGE_REQUEST_RE.search(text):
+        return None
+    m = _IMAGE_SUBJECT_RE.search(text)
+    if m:
+        # Return the first non-empty capture group
+        term = next((g for g in m.groups() if g), None)
+        return term.strip() if term else None
+    return None
 
 
 def _extract_image(text: str) -> tuple[str, str | None]:
@@ -295,6 +325,14 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
         asyncio.ensure_future(_fetch_and_store_image(session_id, image_term))
+    else:
+        # Model didn't emit [IMAGE: ...] — check if the user explicitly asked
+        # for a picture and trigger a fallback search from their message.
+        fallback = _fallback_image_term(text)
+        if fallback:
+            logger.info("[%s] Model omitted image tag — fallback search for: %r",
+                        session_id, fallback)
+            asyncio.ensure_future(_fetch_and_store_image(session_id, fallback))
 
 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
@@ -303,6 +341,8 @@ async def _fetch_and_store_image(session_id: str, term: str) -> None:
     if url:
         _sessions.set_latest_image(session_id, url)
         logger.info("[%s] Stored image URL for %r", session_id, term)
+    else:
+        logger.warning("[%s] Image search returned no results for %r", session_id, term)
 
 
 @app.get("/session/{session_id}/latest_image")

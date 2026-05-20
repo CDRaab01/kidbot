@@ -1,5 +1,5 @@
 """
-CooperBot Test GUI
+KidBot Test GUI
 ------------------
 SPACE      : Hold to record, release to send / interrupt playback
 ENTER      : Send typed text directly (bypasses speech recognition)
@@ -9,6 +9,7 @@ ESC        : Clear the text input
 import io
 import os
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -22,11 +23,21 @@ from PIL import Image, ImageTk
 import requests
 import sounddevice as sd
 
+from server.config import BOT_NAME, CHILD
+
 _RESAMPLE = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", 1))
 
 SERVER_URL   = "http://localhost:8765"
 SESSION_ID   = "gui-session"
 SAMPLE_RATE  = 16000
+
+# Phrases that immediately stop playback without sending anything to the LLM.
+_STOP_RE = re.compile(
+    r"^\s*(stop|enough|be quiet|shut up|no more|stop talking|"
+    r"i'?m done|i am done|that'?s enough|ok stop|okay stop|"
+    r"stop it|stop now|please stop|shhh?)\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _beep(freq: int, duration: float = 0.08, volume: float = 0.22) -> None:
@@ -133,7 +144,7 @@ class FacePanel:
         try:
             resp = requests.get(
                 url, timeout=8,
-                headers={"User-Agent": "CooperBot/1.0 (educational child chatbot)"},
+                headers={"User-Agent": f"{BOT_NAME}/1.0 (educational child chatbot)"},
             )
             resp.raise_for_status()
             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
@@ -181,10 +192,10 @@ class FacePanel:
         self._root.after(100, self._tick)
 
 
-class CooperBotGUI:
+class KidBotGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("CooperBot - Test Console")
+        self.root.title(f"{BOT_NAME} - Test Console")
         self.root.geometry("960x560")
         self.root.minsize(700, 420)
         self.root.configure(bg="#2c3e50")
@@ -199,12 +210,15 @@ class CooperBotGUI:
         self._selected_device_index: int | None = None
         self._images: list = []  # keep PhotoImage refs alive (prevents GC)
         self._current_proc = None  # active ffmpeg process for interrupt
+        self._play_start_time: float = 0.0   # wall-clock when playback began
+        self._reply_shown = False             # set True when typewriter fires
+        self._typewriter_token: int = 0      # increment to cancel in-flight typewriter
         self.face: FacePanel | None = None
 
         self._build_ui()
         self._bind_keys()
         self._poll_queue()
-        self._log("System", "Connected to CooperBot. Press SPACE to talk.")
+        self._log("System", f"Connected to {BOT_NAME}. Press SPACE to talk.")
 
     # ------------------------------------------------------------------
     # UI construction
@@ -215,7 +229,7 @@ class CooperBotGUI:
         header = tk.Frame(self.root, bg="#1a252f", pady=8)
         header.pack(fill=tk.X)
         tk.Label(
-            header, text="CooperBot  Test Console",
+            header, text=f"{BOT_NAME}  Test Console",
             font=("Segoe UI", 15, "bold"), fg="#ecf0f1", bg="#1a252f"
         ).pack()
         tk.Button(
@@ -357,7 +371,7 @@ class CooperBotGUI:
 
         pad = {"padx": 16, "pady": 6}
 
-        tk.Label(win, text="CooperBot Settings", font=("Segoe UI", 13, "bold"),
+        tk.Label(win, text=f"{BOT_NAME} Settings", font=("Segoe UI", 13, "bold"),
                  fg="#ecf0f1", bg="#1a252f").grid(row=0, column=0, columnspan=2, pady=(14, 8))
 
         # --- Voice ---
@@ -526,12 +540,90 @@ class CooperBotGUI:
             self.chat.config(state=tk.NORMAL)
             if self.chat.index(tk.END).strip() != "1.0":
                 self.chat.insert(tk.END, "\n")
-            tag = {"You": "you", "CooperBot": "bot", "You (text)": "text"}.get(speaker, "")
+            tag = {"You": "you", BOT_NAME: "bot", "You (text)": "text"}.get(speaker, "")
             self.chat.insert(tk.END, f"{speaker}: ", tag)
             self.chat.insert(tk.END, text)
             self.chat.config(state=tk.DISABLED)
             self.chat.see(tk.END)
 
+
+    # ------------------------------------------------------------------
+    # Typewriter text effect
+    # ------------------------------------------------------------------
+
+    def _start_typewriter(self, speaker: str, text: str, wpm: float = 175.0):
+        """
+        Insert *text* into the chat word-by-word at *wpm* words per minute.
+
+        Words that were likely already spoken (based on elapsed playback time)
+        are written instantly so the visual catches up to the audio; remaining
+        words appear one at a time at the configured rate.
+        """
+        words = text.split()
+        if not words:
+            return
+        self._reply_shown = True
+        ms_per_word = 60_000.0 / wpm
+
+        # Capture the token at the moment this typewriter run starts.
+        # If _typewriter_token changes (interrupt / new request) the callbacks
+        # will see the mismatch and stop inserting words.
+        token = self._typewriter_token
+
+        # Estimate words already spoken while we were waiting for latest_reply.
+        elapsed_ms = (time.time() - self._play_start_time) * 1_000
+        catch_up = min(int(elapsed_ms / ms_per_word), len(words))
+
+        # --- write the speaker label + already-spoken words instantly ---
+        self.chat.config(state=tk.NORMAL)
+        if self.chat.index(tk.END).strip() != "1.0":
+            self.chat.insert(tk.END, "\n")
+        tag = {"You": "you", BOT_NAME: "bot", "You (text)": "text"}.get(speaker, "")
+        self.chat.insert(tk.END, f"{speaker}: ", tag)
+        if catch_up > 0:
+            self.chat.insert(tk.END, " ".join(words[:catch_up]))
+        self.chat.config(state=tk.DISABLED)
+        self.chat.see(tk.END)
+
+        # --- type remaining words one at a time ---
+        def _type_word(idx: int):
+            # Abort if interrupted or a new response started
+            if self._typewriter_token != token:
+                return
+            if idx >= len(words):
+                return
+            self.chat.config(state=tk.NORMAL)
+            # space before every word except the very first character we write
+            prefix = "" if idx == catch_up and catch_up == 0 else " "
+            self.chat.insert(tk.END, prefix + words[idx])
+            self.chat.config(state=tk.DISABLED)
+            self.chat.see(tk.END)
+            self.root.after(int(ms_per_word), _type_word, idx + 1)
+
+        if catch_up < len(words):
+            self.root.after(int(ms_per_word), _type_word, catch_up)
+
+    def _start_reply_poller(self):
+        """
+        Poll /session/.../latest_reply every 200 ms while audio plays.
+        As soon as the full reply text is available, queue a typewriter item.
+        """
+        def _poll():
+            for _ in range(90):   # up to 18 s
+                time.sleep(0.2)
+                try:
+                    r = requests.get(
+                        f"{SERVER_URL}/session/{SESSION_ID}/latest_reply",
+                        timeout=3,
+                    )
+                    if r.status_code == 200:
+                        reply = r.json().get("reply", "")
+                        if reply:
+                            self._ui_queue.put(("typewriter", (BOT_NAME, reply)))
+                            return
+                except Exception:
+                    pass
+        threading.Thread(target=_poll, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Recording
@@ -608,8 +700,16 @@ class CooperBotGUI:
 
                 if resp.status_code == 200:
                     transcription = resp.headers.get("X-Transcription", "")
+                    # Stop-phrase via voice: discard the audio, don't play.
+                    if self._is_stop_phrase(transcription):
+                        resp.close()
+                        self._ui_queue.put(("state", "IDLE"))
+                        self._ui_queue.put(("chat", ("System",
+                            f"Stop phrase (voice): {transcription!r}")))
+                        return
                     self._ui_queue.put(("chat", ("You", transcription or "(no transcription)")))
                     self._start_image_poller()
+                    self._start_reply_poller()
                     self._play_stream(resp.iter_content(chunk_size=4096))
                     self._after_play()
                 else:
@@ -630,9 +730,14 @@ class CooperBotGUI:
         text = self.text_var.get().strip()
         if not text or self.state not in ("IDLE", "PLAYING"):
             return
+        self.text_var.set("")
+        # Stop-phrase: kill playback and stay silent — don't send to LLM.
+        if self._is_stop_phrase(text):
+            self._interrupt_playback()
+            self._log("System", f"Stop phrase detected: {text!r}")
+            return
         if self.state == "PLAYING":
             self._interrupt_playback()
-        self.text_var.set("")
         self._set_state("PROCESSING")
         self._log("You (text)", text)
 
@@ -646,6 +751,7 @@ class CooperBotGUI:
                 )
                 if resp.status_code == 200:
                     self._start_image_poller()
+                    self._start_reply_poller()
                     self._play_stream(resp.iter_content(chunk_size=4096))
                     self._after_play()
                 else:
@@ -664,7 +770,7 @@ class CooperBotGUI:
         try:
             resp = requests.get(
                 url, timeout=8,
-                headers={"User-Agent": "CooperBot/1.0 (educational child chatbot)"},
+                headers={"User-Agent": f"{BOT_NAME}/1.0 (educational child chatbot)"},
             )
             resp.raise_for_status()
             img = Image.open(io.BytesIO(resp.content))
@@ -690,6 +796,9 @@ class CooperBotGUI:
 
     def _play_stream(self, chunk_iter):
         """Pipe streaming MP3 chunks through ffmpeg and play via sounddevice OutputStream."""
+        self._play_start_time = time.time()
+        self._reply_shown = False
+        self._typewriter_token += 1   # invalidate any previous typewriter run
         self._ui_queue.put(("state", "PLAYING"))
         proc = subprocess.Popen(
             ["ffmpeg", "-i", "pipe:0", "-f", "s16le",
@@ -726,12 +835,17 @@ class CooperBotGUI:
         self._ui_queue.put(("state", "IDLE"))
 
     def _interrupt_playback(self):
+        self._typewriter_token += 1   # cancel any pending word insertions
         if self._current_proc:
             self._current_proc.kill()
             self._current_proc = None
         sd.stop()
         self._set_state("IDLE")
         self._log("System", "Interrupted.")
+
+    def _is_stop_phrase(self, text: str) -> bool:
+        """Return True if *text* is a stop-playback command."""
+        return bool(_STOP_RE.match(text))
 
     # ------------------------------------------------------------------
     # Post-play face + image update
@@ -762,17 +876,19 @@ class CooperBotGUI:
         threading.Thread(target=_poll, daemon=True).start()
 
     def _after_play(self):
-        """After playback: fetch and display bot reply text, show HAPPY then IDLE."""
-        try:
-            r = requests.get(
-                f"{SERVER_URL}/session/{SESSION_ID}/latest_reply", timeout=5,
-            )
-            if r.status_code == 200:
-                reply = r.json().get("reply", "")
-                if reply:
-                    self._ui_queue.put(("chat", ("CooperBot", reply)))
-        except Exception:
-            pass
+        """After playback: update face states. Reply text shown via typewriter poller."""
+        # Fallback: if the reply poller never fired (e.g. server error), show text now.
+        if not self._reply_shown:
+            try:
+                r = requests.get(
+                    f"{SERVER_URL}/session/{SESSION_ID}/latest_reply", timeout=5,
+                )
+                if r.status_code == 200:
+                    reply = r.json().get("reply", "")
+                    if reply and not self._reply_shown:
+                        self._ui_queue.put(("chat", (BOT_NAME, reply)))
+            except Exception:
+                pass
         self._ui_queue.put(("face_state", "HAPPY"))
         time.sleep(1.2)
         self._ui_queue.put(("face_state", "IDLE"))
@@ -791,6 +907,9 @@ class CooperBotGUI:
                 elif kind == "chat":
                     _, (speaker, text) = item
                     self._log(speaker, text)
+                elif kind == "typewriter":
+                    _, (speaker, text) = item
+                    self._start_typewriter(speaker, text)
                 elif kind == "state":
                     self._set_state(item[1])
                     if item[1] == "IDLE":
@@ -818,5 +937,5 @@ class CooperBotGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    CooperBotGUI(root)
+    KidBotGUI(root)
     root.mainloop()

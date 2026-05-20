@@ -141,7 +141,8 @@ class TestSearchWikipedia:
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}
         with patch("server.image_search.requests.get", return_value=_wiki_response(pages)) as m:
             _search_wikipedia("elephant", 500, frozenset())
-        assert "CooperBot" in m.call_args[1]["headers"]["User-Agent"]
+        from server.config import BOT_NAME
+        assert BOT_NAME in m.call_args[1]["headers"]["User-Agent"]
 
     def test_timeout_set(self):
         pages = {"1": _wiki_page(1, "https://example.com/img.jpg")}

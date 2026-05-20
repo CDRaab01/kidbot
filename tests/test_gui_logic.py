@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from server.config import BOT_NAME
+
 requires_display = pytest.mark.skipif(
     not os.environ.get("DISPLAY"),
     reason="No $DISPLAY — skipping Tkinter tests",
@@ -26,8 +28,8 @@ requires_display = pytest.mark.skipif(
 class TestGetInputDevices:
     def _query(self, device_list):
         sys.modules["sounddevice"].query_devices.return_value = device_list
-        from test_gui import CooperBotGUI
-        return CooperBotGUI._get_input_devices()
+        from test_gui import KidBotGUI
+        return KidBotGUI._get_input_devices()
 
     def test_output_only_devices_excluded(self):
         devices = self._query([
@@ -123,8 +125,8 @@ class TestGUIStateMachine:
     def setup_method(self):
         import tkinter as tk
         self.root = tk.Tk()
-        from test_gui import CooperBotGUI
-        self.gui = CooperBotGUI(self.root)
+        from test_gui import KidBotGUI
+        self.gui = KidBotGUI(self.root)
 
     def teardown_method(self):
         self.root.destroy()
@@ -152,7 +154,7 @@ class TestGUIStateMachine:
         assert self.gui.state == "IDLE"
 
     def test_queue_chat_message_logged_to_chat_widget(self):
-        self.gui._ui_queue.put(("chat", ("CooperBot", "Hello!")))
+        self.gui._ui_queue.put(("chat", (BOT_NAME, "Hello!")))
         self.gui._poll_queue()
         import tkinter as tk
         content = self.gui.chat.get("1.0", tk.END)
