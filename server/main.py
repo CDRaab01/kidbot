@@ -338,11 +338,22 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
     shown = _sessions.get_shown_image_urls(session_id)
     url = await run_in_threadpool(fetch_image_url, term, 500, shown) or ""
+
+    if not url:
+        # Primary search failed — retry with enriched variants.
+        # Helps bare terms like "Spider-Man" find character/costume photos.
+        for suffix in ("character", "photo", "illustration", "comic"):
+            variant = f"{term} {suffix}"
+            logger.info("[%s] Retrying image search with variant: %r", session_id, variant)
+            url = await run_in_threadpool(fetch_image_url, variant, 500, shown) or ""
+            if url:
+                break
+
     if url:
         _sessions.set_latest_image(session_id, url)
         logger.info("[%s] Stored image URL for %r", session_id, term)
     else:
-        logger.warning("[%s] Image search returned no results for %r", session_id, term)
+        logger.warning("[%s] Image search returned no results for %r (all variants exhausted)", session_id, term)
 
 
 @app.get("/session/{session_id}/latest_image")

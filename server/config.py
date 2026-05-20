@@ -12,7 +12,7 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8 is fast
 # LLM via LM Studio (OpenAI-compatible)
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
 LM_STUDIO_MODEL    = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
-LLM_MAX_TOKENS     = 500
+LLM_MAX_TOKENS     = 700
 # Maximum number of past exchanges (user+assistant pairs) to include in context.
 # Keeps the prompt from growing unbounded and crowding out the response budget.
 LLM_MAX_HISTORY_EXCHANGES = int(os.getenv("LLM_MAX_HISTORY", "8"))
