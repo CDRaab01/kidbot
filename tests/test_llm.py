@@ -127,12 +127,14 @@ class TestLLMInterfaceStream:
         assert sentences[-1] == OUTPUT_BLOCKED_RESPONSE
 
     def test_stream_short_fragment_merged_with_next(self, mock_openai):
+        # "Hi." is only 3 chars — should be merged, not yielded alone
         mock_openai.chat.completions.create.return_value = _make_stream_chunks(
             ["Hi. ", "How are you doing today?"]
         )
         llm = LLMInterface()
         sentences = list(llm.respond_stream("hello"))
-        assert "Hi." not in sentences
+        # "Hi." alone should not appear as a separate yielded sentence
+        assert all(s.strip() != "Hi." for s in sentences)
 
     def test_stream_flushes_remainder_without_trailing_punctuation(self, mock_openai):
         mock_openai.chat.completions.create.return_value = _make_stream_chunks(
