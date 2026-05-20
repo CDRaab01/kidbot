@@ -2,7 +2,10 @@
 Multi-source image search for kid-friendly content.
 
 Sources (in priority order):
-  1. Wikipedia        — broad encyclopedic coverage, always child-appropriate
+  1. Wikipedia        — three-tier: direct subject lookup → pageimages search
+                         → REST summary fallback for fair-use lead images.
+                         Tier 0 direct lookup is the fastest path for named
+                         subjects (Spider-Man, Saturn, T-Rex, etc.).
   2. Wikimedia Commons — freely licensed images incl. fictional characters,
                          logos, promotional art — fills the gap Wikipedia
                          misses for copyrighted topics (superheroes, etc.)
@@ -33,13 +36,35 @@ _TIMEOUT = 5  # seconds per source
 
 def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
     """
-    Wikipedia image search — two-tier approach:
-    1. pageimages API (fast, one call) — works for most real-world topics.
+    Wikipedia image search — three-tier approach:
+    0. Direct REST summary on the primary subject (first word of the term).
+       Fastest and most reliable — catches fair-use thumbnails immediately
+       without relying on the search API finding the right article.
+       "Spider-Man Marvel Comics character" → looks up "Spider-Man" directly.
+    1. pageimages API (search-based, one call) — works for most real-world topics.
     2. REST summary API fallback — pageimages silently returns no thumbnail
        for articles whose lead image is a fair-use file (fictional characters,
        film/TV subjects, etc.).  The REST summary endpoint returns the
        thumbnail URL regardless of licence.
     """
+    # --- Tier 0: direct REST summary on the primary subject --------------
+    primary_subject = term.split()[0] if term.strip() else ""
+    if primary_subject:
+        try:
+            r = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{primary_subject}",
+                headers=_HEADERS,
+                timeout=_TIMEOUT,
+            )
+            if r.status_code == 200:
+                thumb = r.json().get("thumbnail", {}).get("source", "")
+                if thumb and thumb not in exclude:
+                    logger.debug("Wikipedia Tier 0 hit for %r via %r", term, primary_subject)
+                    return thumb
+        except Exception:
+            pass
+
+    # --- Tier 1 & 2: search-based ----------------------------------------
     try:
         resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
@@ -101,15 +126,17 @@ def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
-        term_lower = term.lower()
+        # Match only on the first/primary word to avoid false positives from
+        # common English words in multi-word queries.  E.g. "Spider-Man Marvel
+        # Comics character" previously matched NASA titles containing "marvel"
+        # (used as an ordinary word like "marvel at this view of Saturn").
+        primary = term.lower().split()[0] if term.strip() else ""
         items = resp.json().get("collection", {}).get("items", [])
         for item in items:
-            # Only return images whose title actually mentions the search term.
-            # This prevents NASA's description-level keyword matches from
-            # surfacing unrelated photos (e.g. mission control for "Spider-Man").
+            # Only return images whose title actually contains the primary subject.
             data = item.get("data", [{}])[0]
             title = data.get("title", "").lower()
-            if not any(word in title for word in term_lower.split()):
+            if primary and primary not in title:
                 continue
             for link in item.get("links", []):
                 href = link.get("href", "")
