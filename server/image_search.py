@@ -2,13 +2,13 @@
 Multi-source image search for kid-friendly content.
 
 Sources (in priority order):
-  1. Wikipedia        — three-tier: direct subject lookup → pageimages search
-                         → REST summary fallback for fair-use lead images.
-                         Tier 0 direct lookup is the fastest path for named
-                         subjects (Spider-Man, Saturn, T-Rex, etc.).
-  2. Wikimedia Commons — freely licensed images incl. fictional characters,
-                         logos, promotional art — fills the gap Wikipedia
-                         misses for copyrighted topics (superheroes, etc.)
+  1. Wikimedia Commons — freely licensed images for ANY topic: fictional
+                         characters (cosplay, fan art), places, science,
+                         nature.  Best first choice because it covers pop
+                         culture that Wikipedia's pageimages API skips.
+  2. Wikipedia        — pageimages API only (free-licensed lead images).
+                         Correctly returns nothing for fair-use articles
+                         (fictional characters, films) so Commons fills in.
   3. NASA Images      — space, planets, spacecraft, science
   4. iNaturalist      — animals, plants, insects, nature
 
@@ -36,35 +36,14 @@ _TIMEOUT = 5  # seconds per source
 
 def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
     """
-    Wikipedia image search — three-tier approach:
-    0. Direct REST summary on the primary subject (first word of the term).
-       Fastest and most reliable — catches fair-use thumbnails immediately
-       without relying on the search API finding the right article.
-       "Spider-Man Marvel Comics character" → looks up "Spider-Man" directly.
-    1. pageimages API (search-based, one call) — works for most real-world topics.
-    2. REST summary API fallback — pageimages silently returns no thumbnail
-       for articles whose lead image is a fair-use file (fictional characters,
-       film/TV subjects, etc.).  The REST summary endpoint returns the
-       thumbnail URL regardless of licence.
-    """
-    # --- Tier 0: direct REST summary on the primary subject --------------
-    primary_subject = term.split()[0] if term.strip() else ""
-    if primary_subject:
-        try:
-            r = requests.get(
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{primary_subject}",
-                headers=_HEADERS,
-                timeout=_TIMEOUT,
-            )
-            if r.status_code == 200:
-                thumb = r.json().get("thumbnail", {}).get("source", "")
-                if thumb and thumb not in exclude:
-                    logger.debug("Wikipedia Tier 0 hit for %r via %r", term, primary_subject)
-                    return thumb
-        except Exception:
-            pass
+    Wikipedia pageimages search — returns free-licensed thumbnails only.
 
-    # --- Tier 1 & 2: search-based ----------------------------------------
+    Deliberately does NOT use the REST summary API, which returns thumbnails
+    regardless of licence — for fictional characters and film/TV subjects that
+    means actor/press photos rather than the character itself.  By sticking to
+    pageimages (free-licence only) Wikipedia correctly returns nothing for
+    fair-use articles, allowing Wikimedia Commons (priority 1) to fill in.
+    """
     try:
         resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
@@ -86,31 +65,10 @@ def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
             resp.json().get("query", {}).get("pages", {}).values(),
             key=lambda p: p.get("index", 99),
         )
-
         for page in pages:
-            # Tier 1: pageimages thumbnail (free-licence images only)
             url = page.get("thumbnail", {}).get("source", "")
             if url and url not in exclude:
                 return url
-
-        # Tier 2: REST summary API — catches fair-use lead images
-        for page in pages:
-            title = page.get("title", "").replace(" ", "_")
-            if not title:
-                continue
-            try:
-                r = requests.get(
-                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}",
-                    headers=_HEADERS,
-                    timeout=_TIMEOUT,
-                )
-                if r.status_code == 200:
-                    thumb = r.json().get("thumbnail", {}).get("source", "")
-                    if thumb and thumb not in exclude:
-                        return thumb
-            except Exception:
-                continue
-
     except Exception as exc:
         logger.warning("Wikipedia image search failed for %r: %s", term, exc)
     return None
@@ -156,9 +114,13 @@ def _search_commons(term: str, size: int, exclude: frozenset) -> str | None:
     because the lead image is a fair-use/copyrighted file.
     """
     try:
-        # Push logo/text-art exclusions into the query so the API ranks them
-        # out before we even see the filenames.
-        search_query = f"{term} -logo -banner -text -svg -symbol -icon -wordmark"
+        # Search by primary subject only (first word/token of the term).
+        # Multi-word queries with many negative terms rank poorly in Commons'
+        # search; using just the subject ("Spider-Man" from "Spider-Man Marvel
+        # Comics character") returns better results.  The filename filter below
+        # still removes logos, SVGs, etc.
+        primary = term.split()[0] if term.strip() else term
+        search_query = f"{primary} -logo -banner -text -svg -symbol -icon -wordmark"
         resp = requests.get(
             "https://commons.wikimedia.org/w/api.php",
             params={
@@ -238,7 +200,7 @@ def fetch_image_url(
     Sources are resolved by name at call time so they can be patched in tests.
     """
     exclude = frozenset(exclude_urls or [])
-    sources = [_search_wikipedia, _search_commons, _search_nasa, _search_inaturalist]
+    sources = [_search_commons, _search_wikipedia, _search_nasa, _search_inaturalist]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as executor:
         indexed = {i: executor.submit(src, term, size, exclude) for i, src in enumerate(sources)}
