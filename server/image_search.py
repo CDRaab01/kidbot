@@ -2,15 +2,18 @@
 Multi-source image search for kid-friendly content.
 
 Sources (in priority order):
-  1. Wikimedia Commons — freely licensed images for ANY topic: fictional
-                         characters (cosplay, fan art), places, science,
-                         nature.  Best first choice because it covers pop
-                         culture that Wikipedia's pageimages API skips.
-  2. Wikipedia        — pageimages API only (free-licensed lead images).
+  1. OpenVerse       — Creative Commons image aggregator (Flickr, museums,
+                        Wikimedia, etc.).  Best for pop culture, cosplay,
+                        fan art, and educational content.  No API key needed
+                        for home use (100 req/day); register free for more.
+  2. Wikimedia Commons — freely licensed images for fictional characters,
+                         places, science, nature.
+  3. Wikipedia        — pageimages API only (free-licensed lead images).
                          Correctly returns nothing for fair-use articles
-                         (fictional characters, films) so Commons fills in.
-  3. NASA Images      — space, planets, spacecraft, science
-  4. iNaturalist      — animals, plants, insects, nature
+                         (fictional characters) so sources 1/2 fill in.
+  4. NASA Images      — space/science only (guarded by topic keywords).
+                         Never queried for non-space subjects.
+  5. iNaturalist      — animals, plants, insects, nature photography.
 
 All sources are free, require no API key, and serve educational content.
 Sources run in parallel; the highest-priority result wins.
@@ -29,20 +32,112 @@ logger = logging.getLogger(__name__)
 _HEADERS = {"User-Agent": f"{BOT_NAME}/1.0 (educational child chatbot; contact via github)"}
 _TIMEOUT = 5  # seconds per source
 
+# Keywords that flag a search as space/science — NASA is only queried when
+# at least one of these appears in the search term.  This prevents NASA's
+# Marvel/NASA collaboration photos (astronauts in Spider-Man suits, etc.)
+# from appearing for fictional-character searches.
+_NASA_TOPIC_WORDS = frozenset({
+    "space", "nasa", "planet", "star", "galaxy", "nebula", "rocket",
+    "astronaut", "cosmonaut", "moon", "mars", "saturn", "jupiter", "venus",
+    "mercury", "uranus", "neptune", "comet", "asteroid", "meteor",
+    "shuttle", "iss", "hubble", "telescope", "solar", "orbit", "satellite",
+    "spacecraft", "launch", "apollo", "artemis", "cosmic", "universe",
+    "milky", "supernova", "exoplanet", "crater", "eclipse",
+})
+
+
+def _is_nasa_topic(term: str) -> bool:
+    t = term.lower()
+    return any(kw in t for kw in _NASA_TOPIC_WORDS)
+
 
 # ---------------------------------------------------------------------------
 # Source implementations
 # ---------------------------------------------------------------------------
 
+def _search_openverse(term: str, size: int, exclude: frozenset) -> str | None:
+    """
+    OpenVerse (Creative Commons image search) — aggregates Flickr, Wikimedia,
+    museums and more.  Returns only CC-licensed images with mature=false.
+    No API key required for up to 100 requests/day (home use).
+
+    Uses the primary subject word so short, focused queries rank well
+    (e.g. "Spider-Man" from "Spider-Man Marvel Comics character").
+    """
+    primary = term.split()[0] if term.strip() else term
+    try:
+        resp = requests.get(
+            "https://api.openverse.org/v1/images/",
+            params={
+                "q": primary,
+                "mature": "false",
+                "page_size": 10,
+            },
+            headers={**_HEADERS, "Accept": "application/json"},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        for result in resp.json().get("results", []):
+            url = result.get("thumbnail") or result.get("url", "")
+            if url and url not in exclude and not url.lower().endswith(".svg"):
+                return url
+    except Exception as exc:
+        logger.warning("OpenVerse image search failed for %r: %s", term, exc)
+    return None
+
+
+def _search_commons(term: str, size: int, exclude: frozenset) -> str | None:
+    """
+    Wikimedia Commons — freely licensed images for fictional characters,
+    places, science, and nature.
+    """
+    primary = term.split()[0] if term.strip() else term
+    search_query = f"{primary} -logo -banner -text -svg -symbol -icon -wordmark"
+    try:
+        resp = requests.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query",
+                "generator": "search",
+                "gsrnamespace": 6,          # File: namespace only
+                "gsrsearch": search_query,
+                "gsrlimit": 20,             # larger window → cosplay/photo files survive filtering
+                "prop": "imageinfo",
+                "iiprop": "url",
+                "iiurlwidth": size,
+                "format": "json",
+            },
+            headers=_HEADERS,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        _SKIP_WORDS = frozenset({
+            "logo", "banner", "text", "title", "wordmark", "symbol",
+            "icon", "emblem", "badge", "seal", "flag", "insignia",
+            "lettering", "font", "typography",
+        })
+        pages = resp.json().get("query", {}).get("pages", {}).values()
+        for page in sorted(pages, key=lambda p: p.get("index", 99)):
+            name = page.get("title", "").lower()
+            if any(w in name for w in _SKIP_WORDS):
+                continue
+            for ii in page.get("imageinfo", []):
+                url = ii.get("thumburl") or ii.get("url", "")
+                if url and url not in exclude and not url.lower().endswith(".svg"):
+                    return url
+    except Exception as exc:
+        logger.warning("Commons image search failed for %r: %s", term, exc)
+    return None
+
+
 def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
     """
     Wikipedia pageimages search — returns free-licensed thumbnails only.
 
-    Deliberately does NOT use the REST summary API, which returns thumbnails
-    regardless of licence — for fictional characters and film/TV subjects that
-    means actor/press photos rather than the character itself.  By sticking to
-    pageimages (free-licence only) Wikipedia correctly returns nothing for
-    fair-use articles, allowing Wikimedia Commons (priority 1) to fill in.
+    Does NOT use the REST summary API (which returns fair-use thumbnails too)
+    because for fictional characters that means actor/press photos rather than
+    the character itself.  pageimages-only correctly returns nothing for
+    fair-use articles, letting OpenVerse/Commons fill in.
     """
     try:
         resp = requests.get(
@@ -75,7 +170,15 @@ def _search_wikipedia(term: str, size: int, exclude: frozenset) -> str | None:
 
 
 def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
-    """NASA Image and Video Library — space, science, engineering imagery."""
+    """
+    NASA Image and Video Library — space, science, engineering imagery.
+
+    Only queried when the search term contains space/science keywords.
+    This prevents NASA's Marvel/NASA collaboration content (astronauts in
+    superhero costumes, themed exhibits) from appearing for character searches.
+    """
+    if not _is_nasa_topic(term):
+        return None
     try:
         resp = requests.get(
             "https://images-api.nasa.gov/search",
@@ -84,14 +187,10 @@ def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
-        # Match only on the first/primary word to avoid false positives from
-        # common English words in multi-word queries.  E.g. "Spider-Man Marvel
-        # Comics character" previously matched NASA titles containing "marvel"
-        # (used as an ordinary word like "marvel at this view of Saturn").
+        # Require the primary subject word in the image title.
         primary = term.lower().split()[0] if term.strip() else ""
         items = resp.json().get("collection", {}).get("items", [])
         for item in items:
-            # Only return images whose title actually contains the primary subject.
             data = item.get("data", [{}])[0]
             title = data.get("title", "").lower()
             if primary and primary not in title:
@@ -104,58 +203,6 @@ def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
                     return href
     except Exception as exc:
         logger.warning("NASA image search failed for %r: %s", term, exc)
-    return None
-
-
-def _search_commons(term: str, size: int, exclude: frozenset) -> str | None:
-    """
-    Wikimedia Commons — freely licensed images for fictional characters,
-    logos, promotional art and anything Wikipedia's pageimages API skips
-    because the lead image is a fair-use/copyrighted file.
-    """
-    try:
-        # Search by primary subject only (first word/token of the term).
-        # Multi-word queries with many negative terms rank poorly in Commons'
-        # search; using just the subject ("Spider-Man" from "Spider-Man Marvel
-        # Comics character") returns better results.  The filename filter below
-        # still removes logos, SVGs, etc.
-        primary = term.split()[0] if term.strip() else term
-        search_query = f"{primary} -logo -banner -text -svg -symbol -icon -wordmark"
-        resp = requests.get(
-            "https://commons.wikimedia.org/w/api.php",
-            params={
-                "action": "query",
-                "generator": "search",
-                "gsrnamespace": 6,          # File: namespace only
-                "gsrsearch": search_query,
-                "gsrlimit": 10,
-                "prop": "imageinfo",
-                "iiprop": "url",
-                "iiurlwidth": size,
-                "format": "json",
-            },
-            headers=_HEADERS,
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-        _SKIP_WORDS = frozenset({
-            "logo", "banner", "text", "title", "wordmark", "symbol",
-            "icon", "emblem", "badge", "seal", "flag", "insignia",
-            "lettering", "font", "typography",
-        })
-        pages = resp.json().get("query", {}).get("pages", {}).values()
-        for page in sorted(pages, key=lambda p: p.get("index", 99)):
-            name = page.get("title", "").lower()
-            # Skip decorative / text-art files that aren't actual images
-            if any(w in name for w in _SKIP_WORDS):
-                continue
-            for ii in page.get("imageinfo", []):
-                url = ii.get("thumburl") or ii.get("url", "")
-                # Skip SVGs — they sometimes don't render in Tkinter
-                if url and url not in exclude and not url.lower().endswith(".svg"):
-                    return url
-    except Exception as exc:
-        logger.warning("Commons image search failed for %r: %s", term, exc)
     return None
 
 
@@ -192,7 +239,7 @@ def fetch_image_url(
     Search all kid-friendly image sources in parallel.
     Returns the highest-priority source result, or None if all sources fail.
 
-    Priority: Wikipedia → NASA → iNaturalist
+    Priority: OpenVerse → Commons → Wikipedia → NASA (space only) → iNaturalist
 
     `exclude_urls` — URLs already shown in this session; each source skips
     them so the child gets fresh content when requesting more on the same topic.
@@ -200,7 +247,8 @@ def fetch_image_url(
     Sources are resolved by name at call time so they can be patched in tests.
     """
     exclude = frozenset(exclude_urls or [])
-    sources = [_search_commons, _search_wikipedia, _search_nasa, _search_inaturalist]
+    sources = [_search_openverse, _search_commons, _search_wikipedia,
+               _search_nasa, _search_inaturalist]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as executor:
         indexed = {i: executor.submit(src, term, size, exclude) for i, src in enumerate(sources)}
