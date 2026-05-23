@@ -143,7 +143,7 @@ def _mp3_response(reply_text: str, transcription: str = "", image_url: str = "")
         "X-Reply":         _safe_header(reply_text),
     }
     if image_url:
-        headers["X-Image-Url"] = image_url
+        headers["X-Image-Url"] = _safe_header(image_url)
     return Response(content=mp3, media_type="audio/mpeg", headers=headers)
 
 
@@ -178,6 +178,8 @@ async def speak(request: Request, text: str = Form(...)):
     """Convert text to MP3. Used by the Pi to pre-fetch error audio clips."""
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 10_000:
+        raise HTTPException(status_code=400, detail="Input too long")
     return Response(content=_tts.synthesize(text), media_type="audio/mpeg")
 
 
@@ -249,6 +251,8 @@ async def chat_text(
     """
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 10_000:
+        raise HTTPException(status_code=400, detail="Input too long")
     logger.info("[%s] Text input: %r", session_id, text)
     try:
         t1 = time.perf_counter()
@@ -324,7 +328,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         _sessions.set_latest_reply(session_id, full_reply)
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
-        asyncio.ensure_future(_fetch_and_store_image(session_id, image_term))
+        asyncio.create_task(_fetch_and_store_image(session_id, image_term))
     else:
         # Model didn't emit [IMAGE: ...] — check if the user explicitly asked
         # for a picture and trigger a fallback search from their message.
@@ -332,28 +336,31 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if fallback:
             logger.info("[%s] Model omitted image tag — fallback search for: %r",
                         session_id, fallback)
-            asyncio.ensure_future(_fetch_and_store_image(session_id, fallback))
+            asyncio.create_task(_fetch_and_store_image(session_id, fallback))
 
 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
-    shown = _sessions.get_shown_image_urls(session_id)
-    url = await run_in_threadpool(fetch_image_url, term, 500, shown) or ""
+    try:
+        shown = _sessions.get_shown_image_urls(session_id)
+        url = await run_in_threadpool(fetch_image_url, term, 500, shown) or ""
 
-    if not url:
-        # Primary search failed — retry with enriched variants.
-        # Helps bare terms like "Spider-Man" find character/costume photos.
-        for suffix in ("character", "photo", "illustration", "comic"):
-            variant = f"{term} {suffix}"
-            logger.info("[%s] Retrying image search with variant: %r", session_id, variant)
-            url = await run_in_threadpool(fetch_image_url, variant, 500, shown) or ""
-            if url:
-                break
+        if not url:
+            # Primary search failed — retry with enriched variants.
+            # Helps bare terms like "Spider-Man" find character/costume photos.
+            for suffix in ("character", "photo", "illustration", "comic"):
+                variant = f"{term} {suffix}"
+                logger.info("[%s] Retrying image search with variant: %r", session_id, variant)
+                url = await run_in_threadpool(fetch_image_url, variant, 500, shown) or ""
+                if url:
+                    break
 
-    if url:
-        _sessions.set_latest_image(session_id, url)
-        logger.info("[%s] Stored image URL for %r", session_id, term)
-    else:
-        logger.warning("[%s] Image search returned no results for %r (all variants exhausted)", session_id, term)
+        if url:
+            _sessions.set_latest_image(session_id, url)
+            logger.info("[%s] Stored image URL for %r", session_id, term)
+        else:
+            logger.warning("[%s] Image search returned no results for %r (all variants exhausted)", session_id, term)
+    except Exception as exc:
+        logger.error("[%s] Background image fetch failed for %r: %s", session_id, term, exc)
 
 
 @app.get("/session/{session_id}/latest_image")
@@ -387,6 +394,8 @@ async def update_settings(
         raise HTTPException(status_code=503, detail="Models not ready")
     changes = {}
     if voice:
+        if voice not in _tts.available_voices():
+            raise HTTPException(status_code=400, detail=f"Unknown voice: {voice!r}")
         _tts.set_voice(voice)
         changes["voice"] = voice
     if speed:
@@ -410,6 +419,8 @@ async def chat_text_stream(
         raise HTTPException(status_code=503, detail="Models not ready")
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 10_000:
+        raise HTTPException(status_code=400, detail="Input too long")
     logger.info("[%s] Stream text input: %r", session_id, text)
     return StreamingResponse(_sentence_stream(text, session_id), media_type="audio/mpeg")
 

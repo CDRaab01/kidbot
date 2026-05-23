@@ -48,10 +48,14 @@ _busy_lock = threading.Lock()  # prevents overlapping sessions
 def on_press():
     if not _busy_lock.acquire(blocking=False):
         return
-    logger.info("PTT pressed — recording...")
-    button.led(True)
-    display.set_state("LISTENING")
-    audio.start_recording()
+    try:
+        logger.info("PTT pressed — recording...")
+        button.led(True)
+        display.set_state("LISTENING")
+        audio.start_recording()
+    except Exception:
+        logger.exception("on_press failed")
+        _busy_lock.release()
 
 
 def on_release():
@@ -60,7 +64,12 @@ def on_release():
     button.blink(count=2, interval=0.15)
     display.set_state("THINKING")
 
-    wav_path = audio.stop_recording()
+    try:
+        wav_path = audio.stop_recording()
+    except Exception:
+        logger.exception("stop_recording failed")
+        _busy_lock.release()
+        return
     try:
         chunk_iter = client.send_audio_stream(wav_path)
         if chunk_iter is not None:

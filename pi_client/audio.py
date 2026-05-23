@@ -47,7 +47,10 @@ class AudioManager:
         max_chunks = int(SAMPLE_RATE / CHUNK_SIZE * MAX_RECORD_SECONDS)
         count = 0
         while self._recording and count < max_chunks:
-            data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            try:
+                data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            except (OSError, IOError):
+                break
             self._frames.append(data)
             count += 1
         if count >= max_chunks:

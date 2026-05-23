@@ -343,14 +343,17 @@ class TestChatTextStream:
         assert resp.status_code == 503
 
     def test_session_history_updated_after_stream(self):
-        with _loaded_stream_client(sentences=["Fine thanks."]) as (client, *_):
+        with _loaded_stream_client(sentences=["Fine thanks."]) as (client, stt, llm, tts):
             client.post("/chat_text_stream", data={"text": "how are you", "session_id": "hist1"})
-            # Second request should have history
+            # Reset so second request returns a fresh iterator
+            llm.respond_stream.return_value = iter(["Doing great!"])
             client.post("/chat_text_stream", data={"text": "follow up", "session_id": "hist1"})
-        # Verify second call's respond_stream was called (history passed through session)
-        from server.main import _sessions
-        # Session should have been updated by the stream
-        # (history check via session store)
+        # On the second call, history passed to respond_stream should include the first exchange.
+        # respond_stream(text, history) — history is the second positional arg.
+        second_call_args = llm.respond_stream.call_args_list[1][0]
+        history = second_call_args[1] if len(second_call_args) > 1 else []
+        assert any(m["content"] == "how are you" for m in history)
+        assert any(m["content"] == "Fine thanks." for m in history)
 
     def test_image_tags_stripped_before_tts(self):
         with _loaded_stream_client(sentences=["[IMAGE: dinosaur] Cool fact!"]) as (client, stt, llm, tts):
@@ -445,3 +448,90 @@ class TestLatestImageEndpoint:
         with _loaded_client() as (client, *_):
             resp2 = client.get("/session/img-test/latest_image")
         assert resp2.json()["image_url"] == ""
+
+
+# ---------------------------------------------------------------------------
+# GET /session/{session_id}/latest_reply
+# ---------------------------------------------------------------------------
+
+class TestLatestReplyEndpoint:
+    def test_returns_empty_for_unknown_session(self):
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/ghost/latest_reply")
+        assert resp.status_code == 200
+        assert resp.json()["reply"] == ""
+
+    def test_returns_and_clears_stored_reply(self):
+        from server.main import _sessions
+        _sessions.get_history("reply-test")
+        _sessions.set_latest_reply("reply-test", "Dinosaurs were huge!")
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/reply-test/latest_reply")
+        assert resp.status_code == 200
+        assert resp.json()["reply"] == "Dinosaurs were huge!"
+        with _loaded_client() as (client, *_):
+            resp2 = client.get("/session/reply-test/latest_reply")
+        assert resp2.json()["reply"] == ""
+
+
+# ---------------------------------------------------------------------------
+# GET /settings/voices
+# ---------------------------------------------------------------------------
+
+class TestSettingsVoices:
+    def test_returns_voice_list_and_current(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.available_voices.return_value = ["af_bella", "af_sky"]
+            tts.voice = "af_bella"
+            tts.speed = 1.0
+            resp = client.get("/settings/voices")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["voices"] == ["af_bella", "af_sky"]
+        assert data["current_voice"] == "af_bella"
+        assert data["current_speed"] == 1.0
+
+    def test_503_when_models_not_ready(self):
+        with patch("server.main._tts", None):
+            client = TestClient(app)
+            resp = client.get("/settings/voices")
+        assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /settings
+# ---------------------------------------------------------------------------
+
+class TestUpdateSettings:
+    def test_valid_voice_accepted(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.available_voices.return_value = ["af_bella", "af_sky"]
+            resp = client.post("/settings", data={"voice": "af_sky"})
+        assert resp.status_code == 200
+        assert resp.json()["changes"]["voice"] == "af_sky"
+        tts.set_voice.assert_called_once_with("af_sky")
+
+    def test_unknown_voice_returns_400(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.available_voices.return_value = ["af_bella"]
+            resp = client.post("/settings", data={"voice": "nonexistent_voice"})
+        assert resp.status_code == 400
+        tts.set_voice.assert_not_called()
+
+    def test_valid_speed_accepted(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.speed = 1.2
+            resp = client.post("/settings", data={"speed": "1.2"})
+        assert resp.status_code == 200
+        tts.set_speed.assert_called_once_with(1.2)
+
+    def test_invalid_speed_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "fast"})
+        assert resp.status_code == 400
+
+    def test_503_when_models_not_ready(self):
+        with patch("server.main._tts", None):
+            client = TestClient(app)
+            resp = client.post("/settings", data={"voice": "af_bella"})
+        assert resp.status_code == 503
