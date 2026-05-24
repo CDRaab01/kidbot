@@ -10,8 +10,10 @@ services:
       - whisper-cache:/root/.cache/huggingface
       - ./server/sessions:/app/server/sessions
       - ./logs:/app/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # host.docker.internal works automatically on Docker Desktop (Windows/Mac).
+    # Uncomment the lines below only if deploying on bare Linux without Docker Desktop:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
 
 volumes:
   whisper-cache:
