@@ -1,0 +1,19 @@
+services:
+  kidbot:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file: .env
+    volumes:
+      - ./server/models:/app/server/models:ro
+      - whisper-cache:/root/.cache/huggingface
+      - ./server/sessions:/app/server/sessions
+      - ./logs:/app/logs
+    # host.docker.internal works automatically on Docker Desktop (Windows/Mac).
+    # Uncomment the lines below only if deploying on bare Linux without Docker Desktop:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+
+volumes:
+  whisper-cache:

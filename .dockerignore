@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.github/
+tests/
+docs/
+pi_client/
+server/temp/
+server/sessions.db
+*.log
+.env
+Makefile

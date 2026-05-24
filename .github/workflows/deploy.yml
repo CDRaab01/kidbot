@@ -1,0 +1,115 @@
+# Deploy pipeline: tests → deploy → smoke test
+#
+# Required GitHub repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST  — server IP or hostname
+#   DEPLOY_USER  — SSH username
+#   DEPLOY_KEY   — SSH private key content
+#   DEPLOY_PORT  — SSH port (optional, defaults to 22)
+
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  TEST_DEPS: >-
+    "fastapi>=0.111.0" "python-multipart>=0.0.9"
+    httpx numpy requests slowapi pytest openai
+
+jobs:
+
+  # ── Tests (run in parallel) ────────────────────────────────────────────────
+
+  test-server:
+    name: Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/server_requirements.txt
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: |
+          python -m pytest \
+            tests/test_api.py \
+            tests/test_guardrails.py \
+            tests/test_llm.py \
+            tests/test_main_helpers.py \
+            tests/test_session.py \
+            tests/test_stt.py \
+            tests/test_tts.py \
+            -v --tb=short
+
+  test-image-search:
+    name: Image Search Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/server_requirements.txt
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: python -m pytest tests/test_image_search.py -v --tb=short
+
+  test-pi-client:
+    name: Pi Client Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/server_requirements.txt
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: |
+          python -m pytest \
+            tests/test_display_volume.py \
+            tests/test_gui_logic.py \
+            tests/test_volume.py \
+            -v --tb=short
+
+  # ── Deploy (needs all tests to pass) ──────────────────────────────────────
+
+  deploy:
+    name: Deploy
+    needs: [test-server, test-image-search, test-pi-client]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            cd kidbot
+            git pull origin main
+            docker compose up -d --build --remove-orphans
+
+  # ── Smoke Test (after deploy) ──────────────────────────────────────────────
+
+  smoke-test:
+    name: Image Smoke Test
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run image relevance smoke test
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            cd kidbot
+            docker compose exec -T kidbot python scripts/wait_for_server.py
+            docker compose exec -T kidbot python scripts/test_images.py --no-vision
