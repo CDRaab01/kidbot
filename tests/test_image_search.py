@@ -296,51 +296,86 @@ class TestSearchiNaturalist:
 # ---------------------------------------------------------------------------
 
 class TestFetchImageUrl:
-    def _patch_sources(self, wiki=None, nasa=None, inat=None):
+    # Patch all five sources so no real network calls are made.
+    # Tests only override the sources relevant to the scenario being tested.
+    def _all_none(self):
+        """Context managers that silence every source."""
         return (
-            patch.object(image_search, "_search_wikipedia", return_value=wiki),
-            patch.object(image_search, "_search_nasa",      return_value=nasa),
-            patch.object(image_search, "_search_inaturalist", return_value=inat),
+            patch.object(image_search, "_search_openverse",   return_value=None),
+            patch.object(image_search, "_search_commons",     return_value=None),
+            patch.object(image_search, "_search_wikipedia",   return_value=None),
+            patch.object(image_search, "_search_nasa",        return_value=None),
+            patch.object(image_search, "_search_inaturalist", return_value=None),
         )
 
-    def test_returns_wikipedia_url_when_all_succeed(self):
-        with patch.object(image_search, "_search_wikipedia", return_value="wiki.jpg"), \
-             patch.object(image_search, "_search_nasa",      return_value="nasa.jpg"), \
+    def test_returns_openverse_url_when_all_succeed(self):
+        with patch.object(image_search, "_search_openverse",   return_value="openverse.jpg"), \
+             patch.object(image_search, "_search_commons",     return_value="commons.jpg"), \
+             patch.object(image_search, "_search_wikipedia",   return_value="wiki.jpg"), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
+             patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
+            assert fetch_image_url("cat") == "openverse.jpg"
+
+    def test_falls_back_to_commons_when_openverse_fails(self):
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value="commons.jpg"), \
+             patch.object(image_search, "_search_wikipedia",   return_value="wiki.jpg"), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
+             patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
+            assert fetch_image_url("cat") == "commons.jpg"
+
+    def test_falls_back_to_wikipedia_when_openverse_and_commons_fail(self):
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value="wiki.jpg"), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
              patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
             assert fetch_image_url("cat") == "wiki.jpg"
 
     def test_falls_back_to_nasa_when_wikipedia_fails(self):
-        with patch.object(image_search, "_search_wikipedia", return_value=None), \
-             patch.object(image_search, "_search_nasa",      return_value="nasa.jpg"), \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value=None), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
              patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
             assert fetch_image_url("saturn") == "nasa.jpg"
 
-    def test_falls_back_to_inaturalist_when_wiki_and_nasa_fail(self):
-        with patch.object(image_search, "_search_wikipedia", return_value=None), \
-             patch.object(image_search, "_search_nasa",      return_value=None), \
+    def test_falls_back_to_inaturalist_when_all_others_fail(self):
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value=None), \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
             assert fetch_image_url("tiger") == "inat.jpg"
 
     def test_returns_none_when_all_sources_fail(self):
-        with patch.object(image_search, "_search_wikipedia", return_value=None), \
-             patch.object(image_search, "_search_nasa",      return_value=None), \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value=None), \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
             assert fetch_image_url("xyzzy") is None
 
-    def test_wikipedia_preferred_over_inaturalist(self):
-        with patch.object(image_search, "_search_wikipedia", return_value="wiki.jpg"), \
-             patch.object(image_search, "_search_nasa",      return_value=None), \
-             patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
-            assert fetch_image_url("lion") == "wiki.jpg"
+    def test_openverse_preferred_over_wikipedia(self):
+        with patch.object(image_search, "_search_openverse",   return_value="openverse.jpg"), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value="wiki.jpg"), \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
+             patch.object(image_search, "_search_inaturalist", return_value=None):
+            assert fetch_image_url("lion") == "openverse.jpg"
 
     def test_nasa_preferred_over_inaturalist(self):
-        with patch.object(image_search, "_search_wikipedia", return_value=None), \
-             patch.object(image_search, "_search_nasa",      return_value="nasa.jpg"), \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   return_value=None), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
              patch.object(image_search, "_search_inaturalist", return_value="inat.jpg"):
             assert fetch_image_url("moon") == "nasa.jpg"
 
     def test_size_forwarded_to_wikipedia(self):
-        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia")   as mock_wiki, \
              patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
@@ -348,7 +383,9 @@ class TestFetchImageUrl:
         mock_wiki.assert_called_once_with("elephant", 300, frozenset())
 
     def test_default_size_is_500(self):
-        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia")   as mock_wiki, \
              patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
@@ -356,15 +393,18 @@ class TestFetchImageUrl:
         mock_wiki.assert_called_once_with("elephant", 500, frozenset())
 
     def test_source_exception_does_not_propagate(self):
-        with patch.object(image_search, "_search_wikipedia", side_effect=RuntimeError("boom")), \
-             patch.object(image_search, "_search_nasa",      return_value="nasa.jpg"), \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia",   side_effect=RuntimeError("boom")), \
+             patch.object(image_search, "_search_nasa",        return_value="nasa.jpg"), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
-            # Should not raise; should fall through to nasa
             result = fetch_image_url("test")
         assert result == "nasa.jpg"
 
     def test_exclude_urls_forwarded_as_frozenset(self):
-        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia")   as mock_wiki, \
              patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
@@ -374,7 +414,9 @@ class TestFetchImageUrl:
         assert "https://example.com/old.jpg" in called_exclude
 
     def test_none_exclude_urls_treated_as_empty(self):
-        with patch.object(image_search, "_search_wikipedia") as mock_wiki, \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_wikipedia")   as mock_wiki, \
              patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None):
             mock_wiki.return_value = "wiki.jpg"
@@ -383,13 +425,14 @@ class TestFetchImageUrl:
         assert called_exclude == frozenset()
 
     def test_skips_excluded_wikipedia_url_via_fetch(self):
-        pages_first = {"1": _wiki_page(1, "https://upload.wikimedia.org/first.jpg")}
         pages_second = {
             "1": _wiki_page(1, "https://upload.wikimedia.org/first.jpg"),
             "2": _wiki_page(2, "https://upload.wikimedia.org/second.jpg"),
         }
         exclude = frozenset({"https://upload.wikimedia.org/first.jpg"})
-        with patch.object(image_search, "_search_nasa",        return_value=None), \
+        with patch.object(image_search, "_search_openverse",   return_value=None), \
+             patch.object(image_search, "_search_commons",     return_value=None), \
+             patch.object(image_search, "_search_nasa",        return_value=None), \
              patch.object(image_search, "_search_inaturalist", return_value=None), \
              patch("server.image_search.requests.get", return_value=_wiki_response(pages_second)):
             result = fetch_image_url("galaxy", exclude_urls=list(exclude))
