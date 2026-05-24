@@ -13,6 +13,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  TEST_DEPS: >-
+    "fastapi>=0.111.0" "python-multipart>=0.0.9"
+    httpx numpy requests slowapi pytest openai
+
 jobs:
 
   # ── Tests (run in parallel) ────────────────────────────────────────────────
@@ -27,13 +32,8 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
-      - name: Install dependencies
-        run: |
-          pip install \
-            "fastapi>=0.111.0" "python-multipart>=0.0.9" \
-            httpx numpy requests slowapi pytest openai
-      - name: Run server tests
-        run: |
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: |
           python -m pytest \
             tests/test_api.py \
             tests/test_guardrails.py \
@@ -54,10 +54,8 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
-      - name: Install dependencies
-        run: pip install requests pytest
-      - name: Run image search tests
-        run: python -m pytest tests/test_image_search.py -v --tb=short
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: python -m pytest tests/test_image_search.py -v --tb=short
 
   test-pi-client:
     name: Pi Client Tests
@@ -69,10 +67,8 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
-      - name: Install dependencies
-        run: pip install pytest numpy
-      - name: Run Pi client tests
-        run: |
+      - run: pip install ${{ env.TEST_DEPS }}
+      - run: |
           python -m pytest \
             tests/test_display_volume.py \
             tests/test_gui_logic.py \
