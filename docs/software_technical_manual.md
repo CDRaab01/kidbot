@@ -49,13 +49,12 @@ kidbot/
 │   ├── main.py                 # Application, endpoints, streaming pipeline
 │   ├── config.py               # All server config / env vars
 │   ├── stt.py                  # Speech-to-Text (Faster-Whisper)
-│   ├── llm.py                  # LLM interface (Ollama)
+│   ├── llm.py                  # LLM interface (LM Studio via OpenAI SDK)
 │   ├── tts.py                  # Text-to-Speech (Kokoro ONNX)
 │   ├── guardrails.py           # Content safety + system prompt
 │   ├── session.py              # Conversation history + SQLite persistence
-│   ├── image_search.py         # Wikipedia image lookup
+│   ├── image_search.py         # 5-source parallel image search
 │   └── models/                 # Model files (not in git)
-│       ├── gemma-3-4b-it-Q4_K_M.gguf
 │       ├── kokoro-v1.0.onnx
 │       └── voices-v1.0.bin
 │
@@ -70,14 +69,13 @@ kidbot/
 │   └── config.py               # Pi-side config / env vars
 │
 ├── test_gui.py                 # Desktop test console (tkinter)
-├── Modelfile                   # Ollama model recipe
 │
 ├── requirements/
 │   ├── server_requirements.txt
 │   └── pi_requirements.txt
 │
 ├── tests/                      # pytest suite
-│   ├── conftest.py             # Module stubs (ollama, whisper, kokoro, tkinter)
+│   ├── conftest.py             # Module stubs (openai, whisper, kokoro, tkinter)
 │   ├── test_api.py
 │   ├── test_guardrails.py
 │   ├── test_llm.py
@@ -90,7 +88,8 @@ kidbot/
 │   └── test_gui_logic.py
 │
 └── .github/workflows/
-    └── tests.yml               # CI — runs tests on push/PR to main
+    ├── tests.yml               # CI — runs tests on PR to main
+    └── deploy.yml              # CI/CD — parallel tests → deploy → smoke-test
 ```
 
 ---
@@ -115,7 +114,7 @@ kidbot/
 ║  └─────────────────────┘  ║       │      │      │      │             ║
 ║                           ║  ┌────▼──┐ ┌─▼───┐ ┌▼───┐ ┌▼─────────┐ ║
 ║  ┌─────────────────────┐  ║  │  STT  │ │ LLM │ │TTS │ │ Session  │ ║
-║  │   AudioManager      │  ║  │Whisper│ │Ollama│ │Kokoro│ │  Store  │ ║
+║  │   AudioManager      │  ║  │Whisper│ │  LM │ │Kokoro│ │  Store  │ ║
 ║  │   PyAudio + mpg123  │  ║  └───────┘ └─────┘ └────┘ └──────────┘ ║
 ║  └─────────────────────┘  ║                 │                        ║
 ║                           ║  ┌──────────────▼──────────────────────┐ ║
@@ -125,7 +124,7 @@ kidbot/
 ║  └─────────────────────┘  ║                                          ║
 ║                           ║  ┌─────────────────────────────────────┐ ║
 ║  ┌─────────────────────┐  ║  │         image_search.py             │ ║
-║  │  PushToTalkButton   │  ║  │         Wikipedia API               │ ║
+║  │  PushToTalkButton   │  ║  │  5-source parallel image search     │ ║
 ║  │  RPi.GPIO           │  ║  └─────────────────────────────────────┘ ║
 ║  └─────────────────────┘  ║                                          ║
 ║                           ║                                          ║
@@ -162,7 +161,7 @@ Server startup
      ▼
 lifespan()
      ├── _stt = SpeechToText()     ← loads Whisper model
-     ├── _llm = LLMInterface()     ← validates Ollama connection
+     ├── _llm = LLMInterface()     ← validates LM Studio connection
      └── _tts = TextToSpeech()     ← loads Kokoro ONNX model
 ```
 
@@ -226,7 +225,7 @@ _sentence_stream(text, session_id)              ← async generator
          │   (on "done" or "err"):
          │       t.join()
          │       _sessions.add_exchange(...)
-         │       asyncio.ensure_future(_fetch_and_store_image(...))
+         │       asyncio.create_task(_fetch_and_store_image(...))
          │
          ▼
   StreamingResponse(media_type="audio/mpeg")
@@ -260,7 +259,7 @@ transcribe(audio_path)
 ### 3.3 Large Language Model (LLM)
 
 **File:** `server/llm.py`  
-**Runtime:** Ollama (local inference)
+**Runtime:** LM Studio (OpenAI-compatible API on port 1234)
 
 #### Class: `LLMInterface`
 
@@ -272,7 +271,7 @@ respond(user_text, history)
       ├── _build_messages():
       │       [system_prompt] + history + [{"role":"user","content":user_text}]
       │
-      ├── ollama.chat(model, messages, options={temperature, num_predict})
+      ├── openai_client.chat.completions.create(model, messages, temperature, max_tokens)
       │
       ├── extract content string
       │
@@ -288,10 +287,10 @@ respond_stream(user_text, history)
       │
       ├── is_input_safe()  ──► FAIL → yield REDIRECT_RESPONSE; return
       │
-      ├── ollama.chat(..., stream=True)
+      ├── openai_client.chat.completions.create(..., stream=True)
       │
       │   for chunk in stream:
-      │       buffer += chunk.message.content
+      │       buffer += chunk.choices[0].delta.content or ""
       │
       │       while _SENT_BOUNDARY matches buffer:
       │           sentence = buffer[:match.start()+1]
@@ -310,7 +309,7 @@ respond_stream(user_text, history)
 
 **Sentence boundary regex:** `(?<=[.!?])\s+`  
 **Min sentence length:** 8 characters  
-**Config:** `OLLAMA_MODEL`, `LLM_TEMPERATURE` (0.7), `LLM_MAX_TOKENS` (200)
+**Config:** `LM_STUDIO_MODEL`, `LLM_TEMPERATURE` (0.7), `LLM_MAX_TOKENS` (700)
 
 ---
 
@@ -435,19 +434,20 @@ SQLite schema:
 ```
 fetch_image_url(term, size=500)
       │
-      ├── GET https://en.wikipedia.org/w/api.php
-      │       ?action=query
-      │       &generator=search
-      │       &gsrsearch={term}
-      │       &prop=pageimages
-      │       &pithumbsize={size}
+      ├── Run 5 searches in parallel (asyncio.gather):
+      │     _search_openverse(term)    → openverse.org  (CC-licensed)
+      │     _search_commons(term)      → commons.wikimedia.org
+      │     _search_wikipedia(term)    → en.wikipedia.org/w/api.php
+      │     _search_nasa(term)         → images-api.nasa.gov
+      │     _search_inaturalist(term)  → api.inaturalist.org
       │
-      ├── extract first result's thumbnail.source
+      ├── Each returns a URL or None
       │
-      └── return URL or None
+      └── Return highest-priority non-None result
+            (OpenVerse > Commons > Wikipedia > NASA > iNaturalist)
 ```
 
-Wikipedia is used because it requires no API key, is child-safe, and has broad encyclopaedic coverage matching typical child curiosity queries.
+Five sources are searched in parallel and the highest-priority result is returned. All sources require no API key and provide freely licensed images suitable for a child audience. The priority order favours general encyclopaedic coverage (OpenVerse/Commons/Wikipedia) over specialist sources (NASA, iNaturalist).
 
 ---
 
@@ -462,9 +462,11 @@ Wikipedia is used because it requires no API key, is child-safe, and has broad e
 | `WHISPER_MODEL` | `small` | `WHISPER_MODEL` |
 | `WHISPER_DEVICE` | `cpu` | `WHISPER_DEVICE` |
 | `WHISPER_COMPUTE_TYPE` | `int8` | `WHISPER_COMPUTE_TYPE` |
-| `OLLAMA_MODEL` | `kidbot` | `OLLAMA_MODEL` |
-| `LLM_TEMPERATURE` | `0.7` | `LLM_TEMPERATURE` |
-| `LLM_MAX_TOKENS` | `200` | `LLM_MAX_TOKENS` |
+| `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_URL` |
+| `LM_STUDIO_MODEL` | `google/gemma-4-e4b` | `LM_STUDIO_MODEL` |
+| `LLM_TEMPERATURE` | `0.7` | — |
+| `LLM_MAX_TOKENS` | `700` | — |
+| `LLM_MAX_HISTORY_EXCHANGES` | `8` | `LLM_MAX_HISTORY` |
 | `KOKORO_VOICE` | `bm_lewis` | `KOKORO_VOICE` |
 | `KOKORO_SPEED` | `1.2` | `KOKORO_SPEED` |
 | `PERSIST_SESSIONS` | `False` | `PERSIST_SESSIONS=1` |
@@ -849,7 +851,7 @@ button.release()
                                                        │
                                                 ┌──────▼──────┐
                                                 │ LLM.respond  │
-                                                │   Ollama     │
+                                                │  LM Studio   │
                                                 └──────┬──────┘
                                                        │ reply
                                                 ┌──────▼──────┐
@@ -913,7 +915,7 @@ Server (_sentence_stream):
 
 _fetch_and_store_image():
   1. fetch_image_url("Tyrannosaurus Rex dinosaur")
-     → Wikipedia API → thumbnail URL
+     → 5-source parallel search → highest-priority URL
   2. _sessions.set_latest_image(session_id, url)
 
 Pi (after audio playback):
@@ -1131,7 +1133,7 @@ Background threads (daemon):
 
 ```
 tests/
-├── conftest.py         Stubs: ollama, faster_whisper, kokoro_onnx,
+├── conftest.py         Stubs: openai, faster_whisper, kokoro_onnx,
 │                              soundfile, sounddevice, PIL, tkinter
 │
 ├── test_api.py         55 tests — all HTTP endpoints, rate limiting,
@@ -1151,7 +1153,7 @@ tests/
 ├── test_tts.py         12 tests — clean_for_speech(), synthesis,
 │                       ffmpeg invocation, temp file cleanup
 │
-├── test_image_search.py  8 tests — Wikipedia API (mocked responses)
+├── test_image_search.py  46 tests — 5-source search, priority/fallback logic (all sources mocked)
 │
 ├── test_volume.py       30 tests — _get_volume parsing, _set_volume args,
 │                        VolumeRocker._adjust (clamp, no-op, on_change),
@@ -1164,7 +1166,7 @@ tests/
                         GUI state machine (tkinter skipped headless)
 ```
 
-**CI:** GitHub Actions runs the full suite on every push/PR to `main` using Python 3.11 (Ubuntu latest).
+**CI:** GitHub Actions runs 3 parallel test jobs on every PR to `main` using Python 3.11 (Ubuntu latest). On push to `main`, tests must pass before the deploy job runs, followed by a smoke test on the live server.
 
 ---
 
@@ -1178,7 +1180,7 @@ tests/
 | `python-multipart>=0.0.9` | Multipart form parsing |
 | `uvicorn[standard]>=0.30` | ASGI server |
 | `faster-whisper>=1.0` | Speech recognition |
-| `ollama>=0.3` | LLM API client |
+| `openai>=1.0` | LM Studio API client (OpenAI-compatible) |
 | `kokoro-onnx>=0.4` | Text-to-speech |
 | `soundfile>=0.12` | WAV file I/O |
 | `requests>=2.32` | Image search HTTP |
@@ -1188,7 +1190,7 @@ tests/
 
 **System packages required:**
 - `ffmpeg` — MP3 encoding
-- `ollama` daemon — LLM inference
+- LM Studio desktop app — LLM inference (must be running with a model loaded)
 
 ### Pi Client (`requirements/pi_requirements.txt`)
 
@@ -1220,11 +1222,12 @@ WHISPER_MODEL=small          # tiny | base | small | medium | large-v3
 WHISPER_DEVICE=cpu           # cpu | cuda
 WHISPER_COMPUTE_TYPE=int8    # int8 | float16 | float32
 
-# LLM
-OLLAMA_MODEL=kidbot          # name of model imported into Ollama
-OLLAMA_URL=http://localhost:11434
+# LLM (LM Studio)
+LM_STUDIO_URL=http://127.0.0.1:1234/v1  # bare Python; use host.docker.internal for Docker
+LM_STUDIO_MODEL=google/gemma-4-e4b      # must match model ID in LM Studio
+LLM_MAX_HISTORY=8
 LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=200
+LLM_MAX_TOKENS=700
 CHILD_NAME=YourChild            # injected into system prompt
 
 # Text-to-Speech
