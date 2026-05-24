@@ -160,7 +160,10 @@ def run(
         reply, image_url = _query_kidbot(message, session)
 
         if not image_url:
-            print(f"  {'Image URL':<12}: (none returned)\n  Bot said : {reply[:80]}\n  Result   : SKIP\n")
+            print(f"  Image URL: (none returned)")
+            print(f"  Bot said : {reply[:80]}")
+            print(f"  Result   : FAIL\n")
+            failures += 1
             continue
 
         print(f"  Image URL: {image_url}")
@@ -181,7 +184,7 @@ def run(
             print(f"  Vision   : {explanation}")
             print(f"  Result   : {verdict}\n")
         else:
-            print(f"  Result   : (open URL above to verify manually)\n")
+            print(f"  Result   : PASS (image returned — open URL to verify visually)\n")
 
         time.sleep(0.5)
 
