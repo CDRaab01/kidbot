@@ -1,6 +1,6 @@
 # KidBot
 
-A voice-activated AI chatbot built for young children. Cooper presses a button on a Raspberry Pi, asks a question out loud, and gets a friendly spoken answer — plus a relevant image on the display. The Pi talks to a server running on a Windows PC that handles all the heavy AI work.
+A voice-activated AI chatbot built for young children. A child presses a button on a Raspberry Pi, asks a question out loud, and gets a friendly spoken answer — plus a relevant image on the display. The Pi talks to a server running on a Windows PC that handles all the heavy AI work.
 
 ---
 
@@ -143,7 +143,7 @@ All server settings are env vars. Copy `.env.example` to `.env` to configure.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CHILD_NAME` | `Cooper` | Child's name — used in the bot's personality |
+| `CHILD_NAME` | `Kid` | Child's name — used in the bot's personality |
 | `LM_STUDIO_URL` | `http://127.0.0.1:1234/v1` | LM Studio server URL |
 | `LM_STUDIO_MODEL` | `google/gemma-4-e4b` | Model ID as shown in LM Studio |
 | `LLM_MAX_HISTORY` | `8` | Conversation turns kept in context |
