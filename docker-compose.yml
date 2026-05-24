@@ -1,0 +1,17 @@
+services:
+  kidbot:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file: .env
+    volumes:
+      - ./server/models:/app/server/models:ro
+      - whisper-cache:/root/.cache/huggingface
+      - ./server/sessions:/app/server/sessions
+      - ./logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  whisper-cache:

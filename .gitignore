@@ -22,6 +22,11 @@ env/
 # Test output
 test_response.mp3
 
+# Docker / deploy
+.env
+logs/
+server/sessions/
+
 # OS
 .DS_Store
 Thumbs.db

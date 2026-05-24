@@ -1,0 +1,54 @@
+# Runs tests then deploys to the production server over SSH.
+#
+# Required GitHub repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST  — server IP or hostname
+#   DEPLOY_USER  — SSH username (e.g. ubuntu, pi)
+#   DEPLOY_KEY   — SSH private key content (cat ~/.ssh/kidbot_deploy)
+#   DEPLOY_PORT  — SSH port (optional, defaults to 22)
+#
+# Server prerequisites:
+#   - Docker installed (curl -fsSL https://get.docker.com | sh)
+#   - Repo cloned to ~/kidbot with .env configured
+#   - Model files present in ~/kidbot/server/models/
+#   - Directories created: ~/kidbot/logs  ~/kidbot/server/sessions
+
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/server_requirements.txt
+      - name: Install test dependencies
+        run: |
+          pip install \
+            fastapi python-multipart httpx numpy requests slowapi pytest openai
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            cd ~/kidbot
+            git pull origin main
+            docker compose up -d --build --remove-orphans
