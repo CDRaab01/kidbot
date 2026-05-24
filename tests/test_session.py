@@ -182,3 +182,29 @@ class TestLatestImage:
         shown = self.store.get_shown_image_urls("s1")
         shown.append("https://mutated.com/x.jpg")
         assert len(self.store.get_shown_image_urls("s1")) == 1  # original unchanged
+
+
+class TestLatestReply:
+    def setup_method(self):
+        self.store = SessionStore()
+
+    def test_get_returns_empty_for_unknown_session(self):
+        assert self.store.get_and_clear_latest_reply("nope") == ""
+
+    def test_set_then_get_returns_reply(self):
+        self.store.get_history("s1")
+        self.store.set_latest_reply("s1", "Hello, world!")
+        assert self.store.get_and_clear_latest_reply("s1") == "Hello, world!"
+
+    def test_get_clears_after_first_call(self):
+        self.store.get_history("s1")
+        self.store.set_latest_reply("s1", "Hello!")
+        self.store.get_and_clear_latest_reply("s1")
+        assert self.store.get_and_clear_latest_reply("s1") == ""
+
+    def test_set_on_nonexistent_session_is_safe(self):
+        self.store.set_latest_reply("ghost", "Hi!")  # no session created yet
+
+    def test_default_latest_reply_is_empty(self):
+        self.store.get_history("s1")
+        assert self.store.get_and_clear_latest_reply("s1") == ""

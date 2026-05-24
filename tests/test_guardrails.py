@@ -62,7 +62,7 @@ class TestGetSystemPrompt:
         assert "REVERSE QUIZ" in _BASE_PROMPT
 
     def test_reverse_quiz_instructs_bot_to_answer_not_ask(self):
-        assert "answering seat" in _BASE_PROMPT or "Cooper is the teacher" in _BASE_PROMPT
+        assert "answering seat" in _BASE_PROMPT
 
     def test_math_mode_instructs_work_out_answer_first(self):
         assert "work out the correct answer" in _BASE_PROMPT

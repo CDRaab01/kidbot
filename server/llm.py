@@ -215,6 +215,7 @@ class LLMInterface:
                 logger.info("LLM stream sentence: %r", sentence)
                 yield sentence
 
+        # Flush anything left in the buffer after the stream ends
         if buffer.strip():
             remaining = buffer.strip()
             # Strip any trailing reasoning if we never found a real sentence

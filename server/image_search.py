@@ -191,9 +191,9 @@ def _search_nasa(term: str, size: int, exclude: frozenset) -> str | None:
         primary = term.lower().split()[0] if term.strip() else ""
         items = resp.json().get("collection", {}).get("items", [])
         for item in items:
-            data = item.get("data", [{}])[0]
+            data = (item.get("data") or [{}])[0]
             title = data.get("title", "").lower()
-            if primary and primary not in title:
+            if primary and title and primary not in title:
                 continue
             for link in item.get("links", []):
                 href = link.get("href", "")
