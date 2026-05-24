@@ -265,7 +265,7 @@ ollama run kidbot "Hello"   # quick sanity check
 export KIDBOT_API_KEY="your-secret-key"
 export PERSIST_SESSIONS=1
 export LOG_FILE=/var/log/kidbot/server.log
-export CHILD_NAME=Cooper
+export CHILD_NAME=YourChild
 ```
 
 ### 5.5 Start the Server

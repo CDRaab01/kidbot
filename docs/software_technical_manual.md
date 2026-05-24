@@ -138,7 +138,7 @@ kidbot/
      Test Console (desktop, no Pi hardware)
   ┌──────────────────────────────────────┐
   │           test_gui.py                │
-  │  FacePanel  │  CooperBotGUI          │
+  │  FacePanel  │  YourChildBotGUI          │
   │  (emulated  │  (mic, chat, send)     │
   │   LCD face) │                        │
   └──────────────────────────────────────┘
@@ -362,7 +362,7 @@ get_system_prompt()
 `_BASE_PROMPT` (77 lines) covers:
 - Tone and language rules (smart 7–10 year old, natural speech, no lists/bullets)
 - Safety absolutes (violence, adult content, personal info)
-- Cooper's favourite topics (engineering, space, Spider-Man, science)
+- YourChild's favourite topics (engineering, space, Spider-Man, science)
 - Special modes: **Story**, **Quiz**, **Joke/Riddle**, **Song/Poem**, **Math**
 - Image tagging rules (explicit request only)
 
@@ -1082,17 +1082,17 @@ The test GUI enables full end-to-end testing without Pi hardware.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│           CooperBot  Test Console                        │
+│           YourChildBot  Test Console                        │
 │─────────────────────────────────────────────────────────│
 │  Mic: [ReSpeaker 2-Mic Array ▼    ]                     │
 │─────────────────────────────────────────────────────────│
 │                                                          │
 │  ┌──────────────────────────────────┐  ┌──────────────┐ │
 │  │                                  │  │ KidBot Screen│ │
-│  │  System: Connected to CooperBot. │  │  ┌────────┐  │ │
+│  │  System: Connected to YourChildBot. │  │  ┌────────┐  │ │
 │  │  You: tell me about dinosaurs    │  │  │  ^  ^  │  │ │
 │  │  System: Captured 24000 frames.. │  │  │   ◡◡   │  │ │
-│  │  CooperBot: Dinosaurs were...    │  │  └────────┘  │ │
+│  │  YourChildBot: Dinosaurs were...    │  │  └────────┘  │ │
 │  │                                  │  │320×240(scaled│ │
 │  │                                  │  └──────────────┘ │
 │  └──────────────────────────────────┘                   │
@@ -1225,7 +1225,7 @@ OLLAMA_MODEL=kidbot          # name of model imported into Ollama
 OLLAMA_URL=http://localhost:11434
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=200
-CHILD_NAME=Cooper            # injected into system prompt
+CHILD_NAME=YourChild            # injected into system prompt
 
 # Text-to-Speech
 KOKORO_MODEL=server/models/kokoro-v1.0.onnx

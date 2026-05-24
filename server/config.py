@@ -18,8 +18,8 @@ LLM_MAX_TOKENS     = 700
 LLM_MAX_HISTORY_EXCHANGES = int(os.getenv("LLM_MAX_HISTORY", "8"))
 LLM_TEMPERATURE    = 0.7
 
-# Child's name — change CHILD here (or set CHILD_NAME env var) to reuse this bot for another child
-CHILD = os.getenv("CHILD_NAME", "Cooper")
+# Child's name — set CHILD_NAME in .env (required; no default so it must be configured)
+CHILD = os.getenv("CHILD_NAME", "Kid")
 BOT_NAME = f"{CHILD}Bot"
 
 # Kokoro ONNX TTS
