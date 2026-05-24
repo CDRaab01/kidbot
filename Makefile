@@ -1,4 +1,4 @@
-.PHONY: up down build logs restart shell test send
+.PHONY: up down build logs restart shell test send test-images
 
 up:
 	docker compose up -d
@@ -23,3 +23,6 @@ test:
 
 send:
 	python scripts/send_text.py $(TEXT)
+
+test-images:
+	python scripts/test_images.py $(ARGS)
