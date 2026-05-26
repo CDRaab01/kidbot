@@ -14,7 +14,7 @@ CHUNK_SIZE = 1024
 MAX_RECORD_SECONDS = 10
 
 # The ReSpeaker 2-Mic HAT device name substring to match
-MIC_DEVICE_HINT = "seeed"
+MIC_DEVICE_HINT = "aic3104"
 
 # API key — must match KIDBOT_API_KEY on the server; empty = disabled
 API_KEY = os.getenv("KIDBOT_API_KEY", "")
