@@ -33,16 +33,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
       - run: pip install ${{ env.TEST_DEPS }}
-      - run: |
-          python -m pytest \
-            tests/test_api.py \
-            tests/test_guardrails.py \
-            tests/test_llm.py \
-            tests/test_main_helpers.py \
-            tests/test_session.py \
-            tests/test_stt.py \
-            tests/test_tts.py \
-            -v --tb=short
+      - run: python -m pytest tests/server/ -v --tb=short
 
   test-image-search:
     name: Image Search Tests
@@ -55,7 +46,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
       - run: pip install ${{ env.TEST_DEPS }}
-      - run: python -m pytest tests/test_image_search.py -v --tb=short
+      - run: python -m pytest tests/server/test_image_search.py -v --tb=short
 
   test-pi-client:
     name: Pi Client Tests
@@ -68,12 +59,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/server_requirements.txt
       - run: pip install ${{ env.TEST_DEPS }}
-      - run: |
-          python -m pytest \
-            tests/test_display_volume.py \
-            tests/test_gui_logic.py \
-            tests/test_volume.py \
-            -v --tb=short
+      - run: python -m pytest tests/pi/ -v --tb=short
 
   # ── Deploy (needs all tests to pass) ──────────────────────────────────────
 
