@@ -68,10 +68,6 @@ class TestDrawVolumeOverlay:
     def _make_draw(self):
         return MagicMock()
 
-    def test_does_not_raise(self):
-        from pi_client.display import _draw_volume_overlay
-        _draw_volume_overlay(self._make_draw(), 50)
-
     def test_draws_two_rectangles(self):
         from pi_client.display import _draw_volume_overlay
         draw = self._make_draw()

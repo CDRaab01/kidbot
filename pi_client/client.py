@@ -36,17 +36,14 @@ class ServerClient:
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 return requests.post(url, headers=self._headers, **kwargs)
-            except requests.Timeout:
-                logger.error("Request timed out (attempt %d/%d)", attempt + 1, _MAX_RETRIES + 1)
-                return None
-            except requests.ConnectionError as exc:
+            except (requests.Timeout, requests.ConnectionError) as exc:
                 if attempt < _MAX_RETRIES:
                     delay = _RETRY_DELAYS[attempt]
-                    logger.warning("Connection error (attempt %d/%d), retrying in %ds: %s",
+                    logger.warning("Request failed (attempt %d/%d), retrying in %ds: %s",
                                    attempt + 1, _MAX_RETRIES + 1, delay, exc)
                     time.sleep(delay)
                 else:
-                    logger.error("Connection failed after %d attempts: %s",
+                    logger.error("Request failed after %d attempts: %s",
                                  _MAX_RETRIES + 1, exc)
         return None
 

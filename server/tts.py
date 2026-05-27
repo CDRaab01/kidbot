@@ -80,16 +80,27 @@ class TextToSpeech:
 
         try:
             sf.write(wav_path, samples, sample_rate)
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", wav_path,
-                    "-codec:a", "libmp3lame", "-qscale:a", "4",
-                    mp3_path,
-                ],
-                capture_output=True,
-                timeout=30,
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-i", wav_path,
+                        "-codec:a", "libmp3lame", "-qscale:a", "4",
+                        mp3_path,
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                logger.error(
+                    "ffmpeg failed (rc=%d): %s",
+                    exc.returncode,
+                    exc.stderr.decode(errors="replace"),
+                )
+                raise
+            except subprocess.TimeoutExpired:
+                logger.error("ffmpeg timed out after 30 s")
+                raise
             with open(mp3_path, "rb") as f:
                 return f.read()
         finally:

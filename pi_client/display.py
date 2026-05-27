@@ -371,16 +371,14 @@ class DisplayManager:
         if img is None:
             return
         # Centre on dark background
-        canvas = __import__("PIL.Image", fromlist=["Image"]).new("RGB", (W, H), BG)
+        from PIL import Image, ImageDraw
+        canvas = Image.new("RGB", (W, H), BG)
         x = (W - img.width) // 2
         y = 24 + (H - 24 - img.height) // 2
         canvas.paste(img, (x, y))
-        # Draw battery on top
-        from PIL import ImageDraw
         draw = ImageDraw.Draw(canvas)
         with self._lock:
             _draw_battery(draw, self._battery)
-        with self._lock:
             self._image_override = canvas
             self._state = "IMAGE"
             self._image_expiry = time.time() + IMAGE_DISPLAY_SECONDS

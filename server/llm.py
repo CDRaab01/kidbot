@@ -79,7 +79,7 @@ def _strip_reasoning(text: str) -> str:
 
 class LLMInterface:
     def __init__(self):
-        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
+        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio", timeout=60.0)
         try:
             models = [m.id for m in self.client.models.list().data]
             if not any(LM_STUDIO_MODEL in m for m in models):

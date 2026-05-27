@@ -55,7 +55,7 @@ class TestGetSystemPrompt:
 
     def test_prompt_instructs_verify_before_praising(self):
         """Prompt must tell the model to check correctness before affirming."""
-        assert "verify" in _BASE_PROMPT.lower() or "never affirm a wrong answer" in _BASE_PROMPT.lower()
+        assert "verify" in _BASE_PROMPT.lower()
 
     def test_prompt_contains_reverse_quiz_mode(self):
         """Prompt must describe reverse-quiz behaviour so the child can be quizmaster."""

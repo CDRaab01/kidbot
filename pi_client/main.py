@@ -43,11 +43,14 @@ display = DisplayManager()
 volume_rocker = VolumeRocker(on_change=display.show_volume)
 
 _busy_lock = threading.Lock()  # prevents overlapping sessions
+_press_owns_lock = False       # True only when on_press successfully acquired _busy_lock
 
 
 def on_press():
+    global _press_owns_lock
     if not _busy_lock.acquire(blocking=False):
         return
+    _press_owns_lock = True
     try:
         logger.info("PTT pressed — recording...")
         button.led(True)
@@ -55,10 +58,14 @@ def on_press():
         audio.start_recording()
     except Exception:
         logger.exception("on_press failed")
+        _press_owns_lock = False
         _busy_lock.release()
 
 
 def on_release():
+    global _press_owns_lock
+    if not _press_owns_lock:
+        return  # on_press returned early — nothing to clean up
     logger.info("PTT released — processing...")
     button.led(False)
     button.blink(count=2, interval=0.15)
@@ -68,6 +75,7 @@ def on_release():
         wav_path = audio.stop_recording()
     except Exception:
         logger.exception("stop_recording failed")
+        _press_owns_lock = False
         _busy_lock.release()
         return
     try:
@@ -98,6 +106,7 @@ def on_release():
             display.set_state("IDLE")
     finally:
         os.unlink(wav_path)
+        _press_owns_lock = False
         _busy_lock.release()
 
 
