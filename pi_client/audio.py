@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 class AudioManager:
     def __init__(self):
+        # Suppress ALSA/JACK noise on stderr during device enumeration
+        import ctypes
+        try:
+            asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+            asound.snd_lib_error_set_handler(None)
+        except Exception:
+            pass
         self._pa = pyaudio.PyAudio()
         self._device_index = self._find_mic()
         self._recording = False
