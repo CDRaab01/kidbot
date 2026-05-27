@@ -1,0 +1,5 @@
+#!/bin/bash
+# Enable AIC3104 MICBIAS at 2.5V (not exposed as ALSA control)
+# Required for ReSpeaker 2-Mic HAT v2 microphone capture
+i2cset -y -f 1 0x18 0x19 0xc6
+exit 0
