@@ -168,3 +168,55 @@ class TestLLMInterfaceStream:
         llm = LLMInterface()
         sentences = list(llm.respond_stream("hi"))
         assert any("Hello" in s for s in sentences)
+
+
+# ---------------------------------------------------------------------------
+# _strip_reasoning() — chain-of-thought filter for Gemma 4
+# ---------------------------------------------------------------------------
+
+from server.llm import _strip_reasoning
+
+
+class TestStripReasoning:
+    def test_plain_text_unchanged(self):
+        text = "The blue whale is the biggest animal in the world."
+        assert _strip_reasoning(text) == text
+
+    def test_the_user_preamble_stripped(self):
+        # "The user is asking..." is a classic Gemma 4 chain-of-thought leak
+        text = "The user is asking about whales. The blue whale is the biggest animal."
+        result = _strip_reasoning(text)
+        assert result.startswith("The blue whale")
+        assert "The user" not in result
+
+    def test_multiple_reasoning_sentences_stripped(self):
+        text = "The user wants to know. I need to keep my response simple. Volcanoes are mountains."
+        result = _strip_reasoning(text)
+        assert "Volcanoes" in result
+        assert "The user" not in result
+
+    def test_all_reasoning_returns_original_as_fallback(self):
+        # All sentences match _REASONING_RE — fallback returns original text
+        text = "The user is asking this. I need to respond carefully."
+        result = _strip_reasoning(text)
+        assert result == text  # nothing non-reasoning found, return as-is
+
+    def test_empty_string_returns_empty(self):
+        assert _strip_reasoning("") == ""
+
+    def test_first_sentence_not_reasoning_returns_all(self):
+        text = "Dinosaurs lived millions of years ago. The user might ask more."
+        result = _strip_reasoning(text)
+        assert result == text  # first sentence is clean → whole text returned
+
+    def test_markdown_asterisk_stripped(self):
+        # Lines starting with * are markdown — always reasoning in this context
+        text = "* thinking about this. Volcanoes are amazing."
+        result = _strip_reasoning(text)
+        assert "Volcanoes" in result
+
+    def test_my_response_meta_stripped(self):
+        text = "My response should be friendly. Elephants are the biggest land animals."
+        result = _strip_reasoning(text)
+        assert "Elephants" in result
+        assert "My response" not in result

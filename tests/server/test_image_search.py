@@ -437,3 +437,245 @@ class TestFetchImageUrl:
              patch("server.image_search.requests.get", return_value=_wiki_response(pages_second)):
             result = fetch_image_url("galaxy", exclude_urls=list(exclude))
         assert result == "https://upload.wikimedia.org/second.jpg"
+
+
+# ---------------------------------------------------------------------------
+# _is_nasa_topic()
+# ---------------------------------------------------------------------------
+
+from server.image_search import _is_nasa_topic, _search_openverse, _search_commons
+
+
+class TestIsNasaTopic:
+    def test_space_term_matches(self):
+        assert _is_nasa_topic("moon landing") is True
+
+    def test_planet_term_matches(self):
+        assert _is_nasa_topic("planet Mars") is True
+
+    def test_astronaut_term_matches(self):
+        assert _is_nasa_topic("astronaut spacewalk") is True
+
+    def test_fictional_character_does_not_match(self):
+        assert _is_nasa_topic("Spider-Man") is False
+
+    def test_animal_does_not_match(self):
+        assert _is_nasa_topic("blue whale") is False
+
+    def test_case_insensitive(self):
+        assert _is_nasa_topic("Hubble Telescope") is True
+
+    def test_partial_word_does_not_match(self):
+        # "planetary" contains "planet" — should still match because `in` substring check
+        assert _is_nasa_topic("planetary science") is True
+
+
+# ---------------------------------------------------------------------------
+# _search_openverse()
+# ---------------------------------------------------------------------------
+
+def _openverse_response(results: list, status_code: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    if status_code >= 400:
+        from requests import HTTPError
+        resp.raise_for_status.side_effect = HTTPError(str(status_code))
+    resp.json.return_value = {"results": results}
+    return resp
+
+
+class TestSearchOpenverse:
+    def test_returns_thumbnail_url(self):
+        results = [{"thumbnail": "https://openverse.org/thumb.jpg", "url": ""}]
+        with patch("server.image_search.requests.get",
+                   return_value=_openverse_response(results)):
+            url = _search_openverse("blue whale", 500, frozenset())
+        assert url == "https://openverse.org/thumb.jpg"
+
+    def test_falls_back_to_url_when_no_thumbnail(self):
+        results = [{"thumbnail": "", "url": "https://openverse.org/full.jpg"}]
+        with patch("server.image_search.requests.get",
+                   return_value=_openverse_response(results)):
+            url = _search_openverse("cat", 500, frozenset())
+        assert url == "https://openverse.org/full.jpg"
+
+    def test_skips_svg_urls(self):
+        results = [
+            {"thumbnail": "https://openverse.org/icon.svg", "url": ""},
+            {"thumbnail": "https://openverse.org/photo.jpg", "url": ""},
+        ]
+        with patch("server.image_search.requests.get",
+                   return_value=_openverse_response(results)):
+            url = _search_openverse("cat", 500, frozenset())
+        assert url == "https://openverse.org/photo.jpg"
+
+    def test_skips_excluded_urls(self):
+        img = "https://openverse.org/already-shown.jpg"
+        results = [
+            {"thumbnail": img, "url": ""},
+            {"thumbnail": "https://openverse.org/new.jpg", "url": ""},
+        ]
+        with patch("server.image_search.requests.get",
+                   return_value=_openverse_response(results)):
+            url = _search_openverse("cat", 500, frozenset({img}))
+        assert url == "https://openverse.org/new.jpg"
+
+    def test_returns_none_on_empty_results(self):
+        with patch("server.image_search.requests.get",
+                   return_value=_openverse_response([])):
+            url = _search_openverse("obscure thing", 500, frozenset())
+        assert url is None
+
+    def test_returns_none_on_request_exception(self):
+        from requests import ConnectionError as ReqConn
+        with patch("server.image_search.requests.get", side_effect=ReqConn()):
+            url = _search_openverse("cat", 500, frozenset())
+        assert url is None
+
+
+# ---------------------------------------------------------------------------
+# _search_commons()
+# ---------------------------------------------------------------------------
+
+def _commons_response(pages: dict, status_code: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    if status_code >= 400:
+        from requests import HTTPError
+        resp.raise_for_status.side_effect = HTTPError(str(status_code))
+    resp.json.return_value = {"query": {"pages": pages}}
+    return resp
+
+
+def _commons_page(index: int, title: str, thumburl: str = "", url: str = "") -> dict:
+    page = {"index": index, "title": title, "imageinfo": []}
+    if thumburl or url:
+        page["imageinfo"] = [{"thumburl": thumburl, "url": url}]
+    return page
+
+
+class TestSearchCommons:
+    def test_returns_thumburl(self):
+        pages = {"1": _commons_page(1, "File:Blue whale.jpg",
+                                    thumburl="https://commons.org/thumb.jpg")}
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response(pages)):
+            url = _search_commons("blue whale", 500, frozenset())
+        assert url == "https://commons.org/thumb.jpg"
+
+    def test_falls_back_to_url_when_no_thumburl(self):
+        pages = {"1": _commons_page(1, "File:Whale.jpg",
+                                    url="https://commons.org/full.jpg")}
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response(pages)):
+            url = _search_commons("whale", 500, frozenset())
+        assert url == "https://commons.org/full.jpg"
+
+    def test_skips_pages_with_skip_words_in_title(self):
+        pages = {
+            "1": _commons_page(1, "File:Batman logo.png",
+                               thumburl="https://commons.org/logo.jpg"),
+            "2": _commons_page(2, "File:Batman character.jpg",
+                               thumburl="https://commons.org/char.jpg"),
+        }
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response(pages)):
+            url = _search_commons("Batman", 500, frozenset())
+        assert url == "https://commons.org/char.jpg"
+
+    def test_skips_svg_urls(self):
+        pages = {
+            "1": _commons_page(1, "File:Cat.svg", thumburl="https://commons.org/cat.svg"),
+            "2": _commons_page(2, "File:Cat.jpg", thumburl="https://commons.org/cat.jpg"),
+        }
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response(pages)):
+            url = _search_commons("cat", 500, frozenset())
+        assert url == "https://commons.org/cat.jpg"
+
+    def test_skips_excluded_urls(self):
+        shown = "https://commons.org/shown.jpg"
+        pages = {
+            "1": _commons_page(1, "File:A.jpg", thumburl=shown),
+            "2": _commons_page(2, "File:B.jpg", thumburl="https://commons.org/new.jpg"),
+        }
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response(pages)):
+            url = _search_commons("thing", 500, frozenset({shown}))
+        assert url == "https://commons.org/new.jpg"
+
+    def test_returns_none_on_empty_pages(self):
+        with patch("server.image_search.requests.get",
+                   return_value=_commons_response({})):
+            url = _search_commons("obscure thing", 500, frozenset())
+        assert url is None
+
+    def test_returns_none_on_request_exception(self):
+        from requests import Timeout
+        with patch("server.image_search.requests.get", side_effect=Timeout()):
+            url = _search_commons("cat", 500, frozenset())
+        assert url is None
+
+
+# ---------------------------------------------------------------------------
+# _fetch_and_store_image() — variant retry logic
+# ---------------------------------------------------------------------------
+
+import asyncio
+from unittest.mock import AsyncMock
+
+
+class TestFetchAndStoreImageVariants:
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_stores_url_on_primary_success(self):
+        async def _go():
+            with patch("server.main._sessions") as mock_sessions, \
+                 patch("server.main.run_in_threadpool",
+                       AsyncMock(return_value="https://example.com/img.jpg")):
+                mock_sessions.get_shown_image_urls.return_value = frozenset()
+                from server.main import _fetch_and_store_image
+                await _fetch_and_store_image("s1", "blue whale")
+                mock_sessions.set_latest_image.assert_called_once_with(
+                    "s1", "https://example.com/img.jpg")
+        self._run(_go())
+
+    def test_retries_with_variants_on_primary_failure(self):
+        async def _go():
+            # primary returns "", first variant ("character") returns a URL
+            returns = ["", "https://example.com/char.jpg"]
+            mock_threadpool = AsyncMock(side_effect=returns)
+            with patch("server.main._sessions") as mock_sessions, \
+                 patch("server.main.run_in_threadpool", mock_threadpool):
+                mock_sessions.get_shown_image_urls.return_value = frozenset()
+                from server.main import _fetch_and_store_image
+                await _fetch_and_store_image("s1", "Spider-Man")
+                mock_sessions.set_latest_image.assert_called_once()
+                assert mock_threadpool.call_count == 2  # primary + 1 variant
+        self._run(_go())
+
+    def test_no_image_stored_when_all_variants_fail(self):
+        async def _go():
+            mock_threadpool = AsyncMock(return_value="")
+            with patch("server.main._sessions") as mock_sessions, \
+                 patch("server.main.run_in_threadpool", mock_threadpool):
+                mock_sessions.get_shown_image_urls.return_value = frozenset()
+                from server.main import _fetch_and_store_image
+                await _fetch_and_store_image("s1", "obscure term xyz")
+                mock_sessions.set_latest_image.assert_not_called()
+                # primary + 4 variants = 5 total calls
+                assert mock_threadpool.call_count == 5
+        self._run(_go())
+
+    def test_exception_is_caught_and_does_not_propagate(self):
+        async def _go():
+            with patch("server.main._sessions") as mock_sessions, \
+                 patch("server.main.run_in_threadpool",
+                       AsyncMock(side_effect=RuntimeError("network error"))):
+                mock_sessions.get_shown_image_urls.return_value = frozenset()
+                from server.main import _fetch_and_store_image
+                # Should not raise
+                await _fetch_and_store_image("s1", "blue whale")
+                mock_sessions.set_latest_image.assert_not_called()
+        self._run(_go())

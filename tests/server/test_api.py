@@ -535,3 +535,46 @@ class TestUpdateSettings:
             client = TestClient(app)
             resp = client.post("/settings", data={"voice": "af_bella"})
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Additional speed edge cases for TestUpdateSettings
+# ---------------------------------------------------------------------------
+
+class TestUpdateSettingsSpeedEdgeCases:
+    def test_nan_speed_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "nan"})
+        assert resp.status_code == 400
+
+    def test_inf_speed_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "inf"})
+        assert resp.status_code == 400
+
+    def test_negative_speed_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "-1.0"})
+        assert resp.status_code == 400
+
+    def test_speed_below_minimum_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "0.4"})
+        assert resp.status_code == 400
+
+    def test_speed_above_maximum_returns_400(self):
+        with _loaded_client() as (client, *_):
+            resp = client.post("/settings", data={"speed": "2.1"})
+        assert resp.status_code == 400
+
+    def test_boundary_minimum_speed_accepted(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.speed = 0.5
+            resp = client.post("/settings", data={"speed": "0.5"})
+        assert resp.status_code == 200
+
+    def test_boundary_maximum_speed_accepted(self):
+        with _loaded_client() as (client, stt, llm, tts):
+            tts.speed = 2.0
+            resp = client.post("/settings", data={"speed": "2.0"})
+        assert resp.status_code == 200
