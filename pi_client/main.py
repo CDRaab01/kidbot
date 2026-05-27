@@ -128,6 +128,7 @@ def main():
 
     display.set_state("IDLE")
     button.blink(count=3, interval=0.3)  # three slow blinks = ready
+    audio.play_startup_sound()
     logger.info("Ready. Hold the button to talk.")
 
     while True:

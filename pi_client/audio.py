@@ -27,6 +27,21 @@ class AudioManager:
         self._frames: list[bytes] = []
         self._stream: pyaudio.Stream | None = None
 
+        # Pre-open the mic stream so the ADC sigma-delta HPF settles before
+        # the first button press.  The idle loop drains the hardware buffer
+        # continuously and starts saving frames only when _recording=True.
+        if self._device_index is not None:
+            self._stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                input_device_index=self._device_index,
+                frames_per_buffer=CHUNK_SIZE,
+            )
+            threading.Thread(target=self._idle_loop, daemon=True).start()
+            logger.info("Mic stream pre-opened; ADC warming up.")
+
     def _find_mic(self) -> int | None:
         for i in range(self._pa.get_device_count()):
             info = self._pa.get_device_info_by_index(i)
@@ -36,41 +51,45 @@ class AudioManager:
         logger.warning("ReSpeaker device not found — using system default mic")
         return None
 
-    def start_recording(self):
-        self._frames = []
-        self._recording = True
-        self._stream = self._pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            input=True,
-            input_device_index=self._device_index,
-            frames_per_buffer=CHUNK_SIZE,
-        )
-        threading.Thread(target=self._capture_loop, daemon=True).start()
-        logger.info("Recording started.")
-
-    def _capture_loop(self):
+    def _idle_loop(self):
+        """Drain mic buffer continuously; save frames to _frames when _recording=True."""
         max_chunks = int(SAMPLE_RATE / CHUNK_SIZE * MAX_RECORD_SECONDS)
-        count = 0
-        while self._recording and count < max_chunks:
+        record_count = 0
+        while self._stream is not None:
             try:
                 data = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
             except (OSError, IOError):
                 break
-            self._frames.append(data)
-            count += 1
-        if count >= max_chunks:
-            logger.warning("Max recording length reached — auto-stopping.")
-            self._recording = False
+            if self._recording:
+                self._frames.append(data)
+                record_count += 1
+                if record_count >= max_chunks:
+                    logger.warning("Max recording length reached — auto-stopping.")
+                    self._recording = False
+                    record_count = 0
+            else:
+                record_count = 0
+
+    def start_recording(self):
+        self._frames = []
+        if self._stream is None:
+            # Fallback: device wasn't found at init (e.g. default mic)
+            self._stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                input_device_index=self._device_index,
+                frames_per_buffer=CHUNK_SIZE,
+            )
+            threading.Thread(target=self._idle_loop, daemon=True).start()
+        self._recording = True
+        logger.info("Recording started.")
 
     def stop_recording(self) -> str:
         """Stop recording and return path to a temp WAV file (caller must delete it)."""
         self._recording = False
-        if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
-            self._stream = None
+        # Keep the stream open so the ADC stays warm for the next recording.
 
         fd, path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
@@ -82,6 +101,47 @@ class AudioManager:
 
         logger.info("Saved recording: %s (%d frames)", path, len(self._frames))
         return path
+
+    def play_startup_sound(self):
+        """Generate mario jingle (once) and play it through the speaker."""
+        import math
+        import struct as _struct
+        sound_path = os.path.join(os.path.dirname(__file__), "mario_startup.wav")
+        if not os.path.exists(sound_path):
+            R = 48000
+            U = int(R * 60 / 200 / 4)  # 16th note at 200 BPM
+
+            def sq(f, n):
+                return [
+                    sum(math.sin(6.28 * f * (2*k-1) * i / R) / (2*k-1) for k in range(1, 4))
+                    / 2 * 0.5 * min(1, i / 80) * min(1, (n - i) / 150)
+                    for i in range(n)
+                ]
+
+            notes = [
+                (659,2),(659,2),(0,2),(659,2),(0,2),(523,2),(659,2),(0,2),
+                (784,4),(0,4),(392,4),(0,4),
+                (523,3),(0,1),(392,3),(0,3),(330,3),(0,1),
+                (440,2),(0,2),(494,2),(0,2),(466,2),(440,2),(0,2),
+                (392,3),(659,3),(784,3),(880,2),(0,2),(698,2),(784,2),
+                (0,2),(659,2),(0,2),(523,2),(587,2),(494,2),(0,4),
+            ]
+            buf = []
+            for f, b in notes:
+                n = U * b
+                buf += sq(f, n) if f else [0.0] * n
+
+            with wave.open(sound_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(R)
+                for v in buf:
+                    s = max(-32768, min(32767, int(v * 28000)))
+                    wf.writeframes(_struct.pack("<h", s))
+            logger.info("Generated startup sound: %s", sound_path)
+
+        subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def play_mp3(self, mp3_data: bytes):
         """Write MP3 to a temp file and play it via mpg123."""
@@ -110,4 +170,13 @@ class AudioManager:
             proc.kill()
 
     def cleanup(self):
+        self._recording = False
+        stream = self._stream
+        self._stream = None  # Signal _idle_loop to exit
+        if stream is not None:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
         self._pa.terminate()
