@@ -4,9 +4,11 @@
 # Usage: cd ~/kidbot && sudo bash pi_setup/setup_2w.sh
 #
 # Pi Zero 2W notes:
-#   - ARMv8 quad-core 1 GHz — supports 32-bit or 64-bit OS
-#   - Use 32-bit for hardware compatibility with Pi Zero WH
+#   - ARMv8 quad-core 1 GHz — use 32-bit OS for HAT compatibility
 #   - DISPLAY_FPS=10 (smoother animation vs WH's 8)
+#   - Uses mainline snd_soc_tlv320aic3x driver (seeed-voicecard fails on 6.18+)
+#   - MICBIAS set via DTS property ai3x-micbias-vg — no i2cset needed
+#   - Mixer applied by control name (numids differ from WH, alsactl restore skipped)
 
 set -e
 
@@ -24,21 +26,74 @@ apt-get update -q
 apt-get install -y -q \
     git python3-pip python3-venv \
     portaudio19-dev i2c-tools alsa-utils \
-    mpg123 ffmpeg
+    mpg123 ffmpeg device-tree-compiler
 
-# ── 2. ReSpeaker / AIC3104 driver ────────────────────────────────
-echo "[2/8] Installing seeed-voicecard (AIC3104) driver..."
-if ! lsmod | grep -q snd_soc_aic3x 2>/dev/null && \
-   ! ls /boot/firmware/overlays/aic3104-soundcard.dtbo &>/dev/null; then
-    TMP=$(mktemp -d)
-    git clone --depth=1 https://github.com/HinTak/seeed-voicecard.git "$TMP/seeed-voicecard"
-    cd "$TMP/seeed-voicecard"
-    bash install.sh
-    cd -
-    rm -rf "$TMP"
-    echo "  Driver installed. A reboot will be needed."
+# ── 2. AIC3104 DTS overlay (mainline driver) ─────────────────────
+# seeed-voicecard DKMS fails on kernel 6.18+ (API changes).
+# The mainline snd_soc_tlv320aic3x module is already in the kernel;
+# we just need a DTS overlay to wire it up and enable MICBIAS.
+echo "[2/8] Building aic3104-soundcard DTS overlay..."
+if ! test -f /boot/firmware/overlays/aic3104-soundcard.dtbo; then
+    python3 - << 'PYEOF'
+dts = """/dts-v1/;
+/plugin/;
+/ {
+    compatible = "brcm,bcm2835";
+    fragment@0 {
+        target = <&i2s>;
+        __overlay__ { status = "okay"; };
+    };
+    fragment@1 {
+        target = <&i2c1>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+            aic3104: aic3104@18 {
+                #sound-dai-cells = <0>;
+                compatible = "ti,tlv320aic3104";
+                reg = <0x18>;
+                status = "okay";
+                ai3x-micbias-vg = <2>;
+                clocks = <&clk_24mhz>;
+                clock-names = "mclk";
+            };
+        };
+    };
+    fragment@2 {
+        target-path = "/";
+        __overlay__ {
+            clk_24mhz: clk_24mhz {
+                compatible = "fixed-clock";
+                #clock-cells = <0>;
+                clock-frequency = <24000000>;
+            };
+            sound {
+                compatible = "simple-audio-card";
+                simple-audio-card,format = "i2s";
+                simple-audio-card,name = "aic3104-soundcard";
+                status = "okay";
+                simple-audio-card,cpu { sound-dai = <&i2s>; };
+                simple-audio-card,codec {
+                    sound-dai = <&aic3104>;
+                    clocks = <&clk_24mhz>;
+                    clock-names = "mclk";
+                };
+            };
+        };
+    };
+};
+"""
+with open("/tmp/aic3104-soundcard.dts", "w") as f:
+    f.write(dts)
+PYEOF
+    dtc -@ -I dts -O dtb \
+        -o /boot/firmware/overlays/aic3104-soundcard.dtbo \
+        /tmp/aic3104-soundcard.dts
+    rm -f /tmp/aic3104-soundcard.dts
+    echo "  Overlay compiled and installed."
 else
-    echo "  Driver already present, skipping."
+    echo "  Overlay already present, skipping."
 fi
 
 # ── 3. /boot/firmware/config.txt ─────────────────────────────────
@@ -58,19 +113,44 @@ add_if_missing "gpio=18=a0"
 echo "[4/8] Setting ALSA default card..."
 cp "$SCRIPT_DIR/common/asound.conf" /etc/asound.conf
 
-# ── 5. rc.local — MICBIAS ────────────────────────────────────────
-echo "[5/8] Installing rc.local (MICBIAS enable)..."
-cp "$SCRIPT_DIR/common/rc.local" /etc/rc.local
-chmod +x /etc/rc.local
+# ── 5. ALSA mixer settings ────────────────────────────────────────
+# Applied by control name so numid changes across kernel versions don't matter.
+# Requires the ReSpeaker HAT to be attached and the overlay loaded.
+# If the card isn't present the script warns and continues — re-run after reboot.
+echo "[5/8] Applying ALSA mixer settings..."
+if aplay -l 2>/dev/null | grep -q aic3104; then
+    # Capture: Line1L/Line1R fully differential, PGA 40 dB
+    amixer -c 1 -q cset name='Left Line1L Mux'             differential
+    amixer -c 1 -q cset name='Right Line1R Mux'            differential
+    amixer -c 1 -q cset name='Left PGA Mixer Line1L Switch'   on
+    amixer -c 1 -q cset name='Right PGA Mixer Line1R Switch'  on
+    amixer -c 1 -q cset name='PGA Capture Switch'           on,on
+    amixer -c 1 -q cset name='PGA Capture Volume'           80,80
+    # Playback: DAC → Line output → NS4150 amp
+    amixer -c 1 -q cset name='Left Line Mixer DACL1 Switch'   on
+    amixer -c 1 -q cset name='Right Line Mixer DACL1 Switch'  on
+    amixer -c 1 -q cset name='Line Playback Switch'         on,on
+    amixer -c 1 -q cset name='Line Playback Volume'         118,118
+    amixer -c 1 -q cset name='Line DAC Playback Volume'     118,118
+    echo "  Mixer configured."
+else
+    echo "  WARNING: aic3104-soundcard not loaded (HAT not attached or reboot needed)."
+    echo "  After rebooting with the HAT attached, re-run:"
+    echo "    sudo bash $0"
+fi
 
-# ── 6. ALSA mixer state ───────────────────────────────────────────
-echo "[6/8] Restoring ALSA mixer state..."
+# ── 6. ALSA state save ────────────────────────────────────────────
+echo "[6/8] Saving ALSA state for next boot..."
 mkdir -p /var/lib/alsa
-cp "$SCRIPT_DIR/common/asound.state" /var/lib/alsa/asound.state
-alsactl restore 1 2>/dev/null || echo "  (will apply after reboot)"
+if aplay -l 2>/dev/null | grep -q aic3104; then
+    alsactl store 1
+    echo "  Saved to /var/lib/alsa/asound.state"
+else
+    echo "  Skipped (card not present — run: sudo alsactl store 1 after reboot)"
+fi
 
 # ── 7. Environment variables ──────────────────────────────────────
-echo "[7/8] Setting environment variables in ~/.bashrc..."
+echo "[7/8] Setting environment variables in /home/pi/.bashrc..."
 BASHRC="/home/pi/.bashrc"
 grep -qF "KIDBOT_SERVER" "$BASHRC" || \
     echo "export KIDBOT_SERVER=$KIDBOT_SERVER" >> "$BASHRC"
