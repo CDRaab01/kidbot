@@ -49,6 +49,7 @@ add_if_missing() {
     grep -qF "$1" "$CONFIG" || echo "$1" >> "$CONFIG"
 }
 
+add_if_missing "dtparam=i2s=on"
 add_if_missing "dtoverlay=i2s-mmap"
 add_if_missing "dtoverlay=aic3104-soundcard"
 add_if_missing "gpio=18=a0"
