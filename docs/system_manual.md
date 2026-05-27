@@ -35,7 +35,7 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
 │    │  Raspberry Pi Zero WH/2W  │       │    Server (PC)     │   │
 │    │                          │  WiFi │                    │   │
 │    │  [Button] ─► [LED]       │◄─────►│  Whisper STT       │   │
-│    │  [ReSpeaker Mic HAT]     │  LAN  │  Gemma 3 4B LLM   │   │
+│    │  [ReSpeaker Mic HAT]     │  LAN  │  Gemma 4 E4B LLM  │   │
 │    │  [Waveshare 2.4" LCD]    │       │  Kokoro TTS        │   │
 │    │  [Speaker / 3.5mm]       │       │  FastAPI :8765     │   │
 │    └──────────────────────────┘       └────────────────────┘   │
@@ -77,7 +77,7 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
 | Disk | 10 GB free | 20 GB free |
 | OS | Ubuntu 22.04+ / Windows 10+ | Ubuntu 22.04 LTS |
 
-> Ollama can use an NVIDIA GPU for faster inference. Set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` if a GPU is available.
+> LM Studio can use an NVIDIA GPU for faster inference via its built-in GPU settings. Set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` to also accelerate Whisper if a GPU is available.
 
 ---
 
@@ -92,17 +92,17 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
 ║  RASPBERRY PI        ║  SERVER PC                                    ║
 ║                      ║                                               ║
 ║  Physical world:     ║  ┌──────────────────────────────────────────┐ ║
-║                      ║  │            Ollama daemon                 │ ║
-║  ┌──────────────┐    ║  │  gemma-3-4b-it-Q4_K_M.gguf             │ ║
-║  │ Push button  │    ║  │  listening on localhost:11434            │ ║
+║                      ║  │           LM Studio (desktop app)        │ ║
+║  ┌──────────────┐    ║  │  google/gemma-4-e4b                      │ ║
+║  │ Push button  │    ║  │  listening on localhost:1234             │ ║
 ║  │ (GPIO 17)    │    ║  └─────────────┬────────────────────────────┘ ║
 ║  └──────┬───────┘    ║                │                              ║
 ║         │ press      ║  ┌─────────────▼────────────────────────────┐ ║
 ║  ┌──────▼───────┐    ║  │       FastAPI server :8765               │ ║
 ║  │ AudioManager │    ║  │                                          │ ║
 ║  │ ReSpeaker HAT│    ║  │  ┌────────┐ ┌─────────┐ ┌────────────┐  │ ║
-║  │ 16 kHz mono  │    ║  │  │Whisper │ │  Ollama │ │  Kokoro    │  │ ║
-║  └──────┬───────┘    ║  │  │ small  │ │ (local) │ │  bm_lewis  │  │ ║
+║  │ 16 kHz mono  │    ║  │  │Whisper │ │  LM     │ │  Kokoro    │  │ ║
+║  └──────┬───────┘    ║  │  │ small  │ │ Studio  │ │  bm_lewis  │  │ ║
 ║         │ WAV        ║  │  └────────┘ └─────────┘ └────────────┘  │ ║
 ║  ┌──────▼───────┐    ║  │                                          │ ║
 ║  │ServerClient  │────╬──►  Guardrails ◄──────────────────────────  │ ║
@@ -164,7 +164,7 @@ KidBot is a voice-activated AI companion for children, designed to be friendly, 
                          ▼                 ▼
               ┌─────────────────┐  ┌──────────────────────┐
               │     HAPPY       │  │       IMAGE          │
-              │ face: ^ ^ smile │  │ Wikipedia photo      │
+              │ face: ^ ^ smile │  │  image from web      │
               │ (1.5 s)         │  │ fills screen (8 s)   │
               └────────┬────────┘  └──────────┬───────────┘
                        │                      │  timeout
@@ -202,8 +202,8 @@ Home LAN  (192.168.1.0/24 example)
                           │  192.168.1.xxx    │
                           └───────────────────┘
 
-Internet (optional — Wikipedia image search only)
-  Server PC ──► wikipedia.org/w/api.php  (HTTPS, no auth required)
+Internet (optional — image search: OpenVerse, Wikipedia, NASA, iNaturalist)
+  Server PC ──► openverse.org, wikipedia.org, nasa.gov, inaturalist.org  (HTTPS, no auth)
 ─────────────────────────────────────────────────────────────────
 ```
 
@@ -212,8 +212,8 @@ Internet (optional — Wikipedia image search only)
 | Port | Direction | Purpose |
 |---|---|---|
 | 8765/TCP | Pi → Server | KidBot API (HTTP) |
-| 11434/TCP | localhost only | Ollama LLM daemon |
-| 443/TCP | Server → Internet | Wikipedia image search |
+| 1234/TCP | localhost only | LM Studio API |
+| 443/TCP | Server → Internet | Image search (OpenVerse, Wikipedia, NASA, iNaturalist) |
 
 **Firewall:** Open port `8765` on the server machine's firewall for LAN access. Do **not** expose this port to the internet.
 
@@ -227,10 +227,9 @@ Internet (optional — Wikipedia image search only)
 # Ubuntu / Debian
 sudo apt update
 sudo apt install -y python3.11 python3-pip ffmpeg git
-
-# Install Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
 ```
+
+> **LM Studio** must be installed separately — download from [lmstudio.ai](https://lmstudio.ai), load the Gemma 4 E4B model, and start the Local Server before running KidBot.
 
 ### 5.2 Clone and Install
 
@@ -243,17 +242,14 @@ pip install -r requirements/server_requirements.txt
 ### 5.3 Set Up Models
 
 ```bash
-# 1. Download the Gemma 3 4B quantized model
-#    Place at: server/models/gemma-3-4b-it-Q4_K_M.gguf
+# 1. Download and install LM Studio from https://lmstudio.ai
+# 2. In LM Studio, search for and download: google/gemma-4-e4b
+# 3. Go to the Local Server tab and load the model
+# 4. Click "Start Server" — LM Studio listens on http://localhost:1234
+# 5. Verify the server is running:
+curl http://localhost:1234/v1/models
 
-# 2. Import into Ollama
-ollama create kidbot -f Modelfile
-
-# 3. Verify
-ollama list        # should show "kidbot"
-ollama run kidbot "Hello"   # quick sanity check
-
-# 4. Download Kokoro ONNX model and voices
+# 6. Download Kokoro ONNX model and voices
 #    Place at: server/models/kokoro-v1.0.onnx
 #              server/models/voices-v1.0.bin
 ```
@@ -288,7 +284,7 @@ uvicorn server.main:app --host 0.0.0.0 --port 8765 --workers 1
 # /etc/systemd/system/kidbot.service
 [Unit]
 Description=KidBot AI Server
-After=network.target ollama.service
+After=network.target
 
 [Service]
 Type=simple
@@ -309,6 +305,36 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now kidbot
 sudo systemctl status kidbot
 ```
+
+### 5.7 Deploy via Docker (Windows / Docker Desktop)
+
+The recommended deployment method on Windows is Docker Desktop.
+
+```powershell
+# 1. Install Docker Desktop from https://docker.com
+
+# 2. Clone and configure:
+git clone https://github.com/CDRaab01/kidbot.git
+cd kidbot
+copy .env.example .env
+notepad .env   # set CHILD_NAME, LM_STUDIO_MODEL, etc.
+
+# 3. Place model files:
+#    server\models\kokoro-v1.0.onnx
+#    server\models\voices-v1.0.bin
+
+# 4. Create runtime directories:
+mkdir logs
+mkdir server\sessions
+
+# 5. Start:
+docker compose up -d
+docker compose logs -f kidbot
+```
+
+`host.docker.internal` (used in `LM_STUDIO_URL`) resolves automatically on Docker Desktop — LM Studio runs on the Windows host and the container reaches it at `http://host.docker.internal:1234/v1`.
+
+Once you see `Application startup complete`, the server is ready at `http://localhost:8765`.
 
 ---
 
@@ -399,29 +425,29 @@ sudo systemctl enable --now kidbot-pi
 
 ## 7. Model Setup
 
-### 7.1 LLM — Gemma 3 4B (Ollama)
+### 7.1 LLM — Gemma 4 E4B (LM Studio)
 
-```
-Modelfile:
-  FROM ./server/models/gemma-3-4b-it-Q4_K_M.gguf
+LM Studio is a desktop application that serves LLM models via an OpenAI-compatible API.
 
-Create:
-  ollama create kidbot -f Modelfile
+**Setup:**
+1. Download LM Studio from [lmstudio.ai](https://lmstudio.ai)
+2. In the Discover tab, search for `google/gemma-4-e4b` and download it
+3. Open the Local Server tab (⇆ icon), select the model, and click **Start Server**
+4. LM Studio listens on `http://localhost:1234/v1`
 
-Verify:
-  ollama list
-  ollama ps         ← shows loaded model when server is running
-```
+**Configuration:**
 
-The model is addressed as `kidbot` throughout the codebase. To swap models, update `Modelfile` and re-run `ollama create`, or set `OLLAMA_MODEL=<new-name>`.
+| Env Variable | Value |
+|---|---|
+| `LM_STUDIO_URL` | `http://127.0.0.1:1234/v1` (bare Python) or `http://host.docker.internal:1234/v1` (Docker) |
+| `LM_STUDIO_MODEL` | `google/gemma-4-e4b` (must match the model ID shown in LM Studio) |
 
-**VRAM / RAM requirements:**
+**RAM requirements (Gemma 4 E4B):**
 
-| Quantisation | RAM needed | Speed (CPU) |
+| Mode | RAM needed | Speed |
 |---|---|---|
-| Q4_K_M (default) | ~4 GB | ~1–3 tok/s on modern CPU |
-| Q8_0 | ~8 GB | ~0.5–1 tok/s |
-| fp16 (GPU) | ~8 GB VRAM | ~20+ tok/s |
+| CPU (default) | ~6 GB | ~1–3 tok/s on modern CPU |
+| GPU offload | 4+ GB VRAM | ~10–30 tok/s |
 
 ### 7.2 STT — Faster-Whisper
 
@@ -594,8 +620,8 @@ The system prompt strictly instructs the model to avoid violence, adult content,
 ### Start Everything
 
 ```bash
-# 1. Start Ollama (if not already running as a service)
-ollama serve &
+# 1. Ensure LM Studio is running with the Gemma 4 E4B model loaded
+#    (Open LM Studio → Local Server tab → select model → Start Server)
 
 # 2. Start the KidBot server
 cd /path/to/kidbot
@@ -693,7 +719,7 @@ sqlite3 server/sessions.db "SELECT session_id, last_active FROM sessions;"
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| `RuntimeError: kidbot not found in Ollama` | Model not imported | `ollama create kidbot -f Modelfile` |
+| `LLM server not reachable` | LM Studio not running | Open LM Studio, load the model, and start the Local Server |
 | `FileNotFoundError: kokoro-v1.0.onnx` | Missing model file | Download Kokoro and place in `server/models/` |
 | `ImportError: faster_whisper` | Package not installed | `pip install faster-whisper` |
 | Port 8765 already in use | Previous instance running | `pkill -f server.main` |
@@ -790,7 +816,7 @@ alsamixer
 | Symptom | Fix |
 |---|---|
 | >10 s per response | Upgrade to larger CPU, or enable GPU with `WHISPER_DEVICE=cuda` |
-| Ollama timing out | Check `ollama ps` — model may have been unloaded |
+| LM Studio not responding | Check LM Studio → Local Server tab — model may need reloading |
 | Choppy streaming | Check WiFi signal strength on Pi |
 
 ### Pi performance notes
@@ -843,17 +869,16 @@ sudo systemctl restart kidbot-pi
 ### Changing the LLM Model
 
 ```bash
-# 1. Download new GGUF to server/models/
-# 2. Edit Modelfile:   FROM ./server/models/new-model.gguf
-# 3. Re-create in Ollama:
-ollama create kidbot -f Modelfile
-# 4. Restart server
+# 1. In LM Studio, download the new model from the Discover tab
+# 2. In the Local Server tab, select the new model and click Start Server
+# 3. Update the env var and restart:
+export LM_STUDIO_MODEL=<model-id-shown-in-lm-studio>
 sudo systemctl restart kidbot
 ```
 
-Or, to use a different model name without editing `Modelfile`:
+Or set it permanently in `.env`:
 ```bash
-export OLLAMA_MODEL=llama3.2
+LM_STUDIO_MODEL=google/gemma-4-e4b
 ```
 
 ### Changing the TTS Voice
@@ -876,4 +901,4 @@ cd /path/to/kidbot
 python -m pytest tests/ -v --tb=short
 ```
 
-All 207 tests should pass before deploying.
+All 243 tests should pass before deploying.

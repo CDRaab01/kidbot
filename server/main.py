@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import logging.handlers
+import math
 import os
 import re
 import tempfile
@@ -400,10 +401,13 @@ async def update_settings(
         changes["voice"] = voice
     if speed:
         try:
-            _tts.set_speed(float(speed))
+            speed_val = float(speed)
+            if not math.isfinite(speed_val) or not (0.5 <= speed_val <= 2.0):
+                raise ValueError("out of range")
+            _tts.set_speed(speed_val)
             changes["speed"] = _tts.speed
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid speed value")
+            raise HTTPException(status_code=400, detail="Speed must be a number between 0.5 and 2.0")
     return {"status": "ok", "changes": changes}
 
 

@@ -208,3 +208,50 @@ class TestLatestReply:
     def test_default_latest_reply_is_empty(self):
         self.store.get_history("s1")
         assert self.store.get_and_clear_latest_reply("s1") == ""
+
+
+# ---------------------------------------------------------------------------
+# _load_from_db() — corrupt JSON row handling
+# ---------------------------------------------------------------------------
+
+class TestLoadFromDbCorruption:
+    def test_corrupt_json_row_loads_as_empty_history(self, tmp_path):
+        """A session with unparseable JSON in the DB should load with empty history."""
+        db = str(tmp_path / "sessions.db")
+        # Manually create the DB and insert a corrupt row
+        with sqlite3.connect(db) as conn:
+            conn.execute("""
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    messages TEXT NOT NULL,
+                    last_active REAL NOT NULL
+                )
+            """)
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?)",
+                ("corrupt-session", "this is not valid JSON {{{", time.time()),
+            )
+
+        store = SessionStore(db_path=db)
+        history = store.get_history("corrupt-session")
+        assert history == []  # corrupt row silently becomes empty history
+
+    def test_valid_and_corrupt_rows_coexist(self, tmp_path):
+        """Valid sessions load correctly alongside a corrupt one."""
+        db = str(tmp_path / "sessions.db")
+        store1 = SessionStore(db_path=db)
+        store1.add_exchange("good-session", "hello", "hi there")
+
+        # Inject a corrupt row directly
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?)",
+                ("bad-session", "}{invalid", time.time()),
+            )
+
+        store2 = SessionStore(db_path=db)
+        good_history = store2.get_history("good-session")
+        bad_history = store2.get_history("bad-session")
+
+        assert len(good_history) == 2  # good session intact
+        assert bad_history == []       # corrupt session silently recovers

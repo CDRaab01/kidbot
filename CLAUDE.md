@@ -8,7 +8,10 @@ KidBot is a FastAPI voice chatbot for a young child: a Raspberry Pi Zero WH capt
 ```
 server/         FastAPI server — all production Python
 pi_client/      Raspberry Pi client — runs on the Pi only
-tests/          Pytest suite — 243 tests, 10 skipped (GUI/display need $DISPLAY)
+tests/
+  server/       Server unit tests (243 collected, 0 skipped)
+  pi/           Pi client unit tests (10 skipped — need $DISPLAY)
+  live/         Live integration tests — require a running server, skipped in CI
 scripts/        CLI tools (not part of the server, not tested in CI)
 requirements/   server_requirements.txt  |  pi_requirements.txt
 docs/           System and software manuals
@@ -28,6 +31,7 @@ docs/           System and software manuals
 | `server/session.py` | `SessionStore` — in-memory dict + optional SQLite, per-session history + latest image/reply |
 | `server/guardrails.py` | `get_system_prompt()`, `is_input_safe()`, `is_output_safe()` |
 | `tests/conftest.py` | Stubs for all non-stdlib packages (RPi.GPIO, PIL, tkinter, kokoro_onnx, etc.) — loaded automatically by pytest |
+| `tests/live/conftest.py` | Server URL + skip-if-not-running fixture for live tests |
 
 ## Running tests
 
@@ -35,14 +39,17 @@ docs/           System and software manuals
 # Install once
 pip install "fastapi>=0.111.0" "python-multipart>=0.0.9" httpx numpy requests slowapi pytest openai
 
-# All tests
-python -m pytest tests/ -v
+# All unit tests (what CI runs)
+python -m pytest tests/server/ tests/pi/ -v
 
 # By area (mirrors CI jobs)
-python -m pytest tests/test_api.py tests/test_guardrails.py tests/test_llm.py \
-    tests/test_main_helpers.py tests/test_session.py tests/test_stt.py tests/test_tts.py
-python -m pytest tests/test_image_search.py
-python -m pytest tests/test_display_volume.py tests/test_gui_logic.py tests/test_volume.py
+python -m pytest tests/server/         # server unit tests
+python -m pytest tests/server/test_image_search.py  # image search only
+python -m pytest tests/pi/             # Pi client tests
+
+# Live integration tests (requires running server)
+pytest tests/live/ -v
+KIDBOT_URL=http://192.168.1.100:8765 pytest tests/live/ -v   # remote server
 ```
 
 Never run the full `requirements/server_requirements.txt` in CI — it installs kokoro-onnx, faster-whisper, etc. which are stubbed out by conftest.py and would be wasted.

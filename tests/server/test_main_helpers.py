@@ -1,0 +1,231 @@
+"""Unit tests for _safe_header() and _extract_image() in server/main.py."""
+import pytest
+from server.main import _extract_image, _safe_header
+
+
+class TestSafeHeader:
+    def test_plain_ascii_unchanged(self):
+        assert _safe_header("Hello world") == "Hello world"
+
+    def test_newline_replaced_with_space(self):
+        result = _safe_header("line1\nline2")
+        assert "\n" not in result
+        assert "line1" in result and "line2" in result
+
+    def test_carriage_return_replaced_with_space(self):
+        result = _safe_header("line1\rline2")
+        assert "\r" not in result
+
+    def test_crlf_injection_neutralised(self):
+        evil = "value\r\nX-Injected: bad"
+        result = _safe_header(evil)
+        assert "\r\n" not in result
+        assert "X-Injected" not in result or "X-Injected" in result.replace("\r\n", "  ")
+
+    def test_non_ascii_replaced(self):
+        result = _safe_header("héllo wörld")
+        result.encode("ascii")  # raises ValueError if non-ASCII present
+
+    def test_curly_apostrophe_normalised(self):
+        assert "'" in _safe_header("it’s fine")
+        assert "’" not in _safe_header("it’s fine")
+
+    def test_curly_double_quotes_normalised(self):
+        result = _safe_header("“hello”")
+        assert '"' in result
+        assert "“" not in result and "”" not in result
+
+    def test_em_dash_becomes_hyphen(self):
+        assert "-" in _safe_header("one—two")
+        assert "—" not in _safe_header("one—two")
+
+    def test_en_dash_becomes_hyphen(self):
+        assert "-" in _safe_header("one–two")
+
+    def test_multiple_spaces_collapsed(self):
+        assert _safe_header("a  b   c") == "a b c"
+
+    def test_empty_string_returns_empty(self):
+        assert _safe_header("") == ""
+
+
+class TestExtractImage:
+    def test_returns_term_and_clean_text(self):
+        text, term = _extract_image("Cats are cool. [IMAGE: fluffy cat]")
+        assert term == "fluffy cat"
+        assert "[IMAGE:" not in text
+        assert "Cats are cool." in text
+
+    def test_no_tag_returns_none_term(self):
+        text, term = _extract_image("No image here.")
+        assert term is None
+        assert text == "No image here."
+
+    def test_tag_only_returns_empty_text(self):
+        text, term = _extract_image("[IMAGE: dinosaur]")
+        assert term == "dinosaur"
+        assert text == ""
+
+    def test_case_insensitive(self):
+        _, term = _extract_image("[image: elephant]")
+        assert term == "elephant"
+
+    def test_term_whitespace_trimmed(self):
+        _, term = _extract_image("[IMAGE:   space panda   ]")
+        assert term == "space panda"
+
+    def test_tag_removed_from_middle_of_text(self):
+        text, term = _extract_image("Here is [IMAGE: tiger] a fact.")
+        assert term == "tiger"
+        assert "[IMAGE:" not in text
+        assert "Here is" in text and "a fact." in text
+
+    def test_multiword_term_preserved(self):
+        _, term = _extract_image("[IMAGE: blue whale swimming]")
+        assert term == "blue whale swimming"
+
+
+# ---------------------------------------------------------------------------
+# _fallback_image_term()
+# ---------------------------------------------------------------------------
+
+from server.main import _fallback_image_term
+
+
+class TestFallbackImageTerm:
+    def test_show_me_picture_of_extracts_subject(self):
+        assert _fallback_image_term("show me a picture of a blue whale") == "a blue whale"
+
+    def test_see_photo_of_extracts_subject(self):
+        result = _fallback_image_term("can I see a photo of the moon?")
+        assert result is not None
+        assert "moon" in result
+
+    def test_what_does_look_like_without_image_word_returns_none(self):
+        # REQUEST_RE requires show/see/picture/image/photo — "what does" alone fails
+        assert _fallback_image_term("what does a volcano look like") is None
+
+    def test_plain_picture_of_extracts_subject(self):
+        result = _fallback_image_term("picture of a rainbow")
+        assert result is not None
+        assert "rainbow" in result
+
+    def test_no_image_request_returns_none(self):
+        assert _fallback_image_term("tell me about dinosaurs") is None
+
+    def test_show_me_without_picture_of_returns_none(self):
+        # "show me a dinosaur" — image request word present but no "picture/photo/image of"
+        assert _fallback_image_term("show me a dinosaur") is None
+
+    def test_empty_string_returns_none(self):
+        assert _fallback_image_term("") is None
+
+    def test_case_insensitive(self):
+        result = _fallback_image_term("Show Me A Picture Of a tiger")
+        assert result is not None
+        assert "tiger" in result
+
+
+# ---------------------------------------------------------------------------
+# Input length limits (10 000 chars) across endpoints
+# ---------------------------------------------------------------------------
+
+import io
+import wave
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
+
+from fastapi.testclient import TestClient
+from server.main import app, limiter
+
+
+@contextmanager
+def _client_with_models():
+    limiter._storage.reset()
+    with patch("server.main.SpeechToText") as MockSTT, \
+         patch("server.main.LLMInterface") as MockLLM, \
+         patch("server.main.TextToSpeech") as MockTTS:
+        MockSTT.return_value = MagicMock()
+        MockLLM.return_value = MagicMock()
+        tts = MagicMock()
+        tts.synthesize.return_value = b"fakemp3"
+        MockTTS.return_value = tts
+        with TestClient(app) as client:
+            yield client
+
+
+class TestInputLengthLimits:
+    _long_text = "x" * 10_001
+
+    def test_speak_too_long_returns_400(self):
+        with _client_with_models() as client:
+            resp = client.post("/speak", data={"text": self._long_text})
+        assert resp.status_code == 400
+
+    def test_chat_text_too_long_returns_400(self):
+        with _client_with_models() as client:
+            resp = client.post("/chat_text", data={"text": self._long_text, "session_id": "s1"})
+        assert resp.status_code == 400
+
+    def test_chat_text_stream_too_long_returns_400(self):
+        with _client_with_models() as client:
+            resp = client.post("/chat_text_stream", data={"text": self._long_text, "session_id": "s1"})
+        assert resp.status_code == 400
+
+    def test_exactly_10000_chars_is_accepted(self):
+        with _client_with_models() as client:
+            resp = client.post("/speak", data={"text": "x" * 10_000})
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _sentence_stream() error branch
+# ---------------------------------------------------------------------------
+
+class TestSentenceStreamErrorBranch:
+    def test_llm_exception_in_producer_does_not_update_session(self):
+        """When the LLM stream raises, full_parts is empty → no session history written."""
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             patch("server.main._sessions") as mock_sessions:
+
+            MockSTT.return_value = MagicMock()
+            llm = MagicMock()
+            llm.respond_stream.side_effect = RuntimeError("LLM exploded")
+            MockLLM.return_value = llm
+
+            tts = MagicMock()
+            tts.synthesize.return_value = b"fakemp3"
+            MockTTS.return_value = tts
+            mock_sessions.get_history.return_value = []
+
+            with TestClient(app) as client:
+                resp = client.post("/chat_text_stream",
+                                   data={"text": "hi", "session_id": "err-test"})
+
+        assert resp.status_code == 200
+        mock_sessions.add_exchange.assert_not_called()
+
+    def test_llm_exception_stream_returns_empty_body(self):
+        """Stream body should be empty (no sentences synthesised) on error."""
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS:
+
+            MockSTT.return_value = MagicMock()
+            llm = MagicMock()
+            llm.respond_stream.side_effect = RuntimeError("boom")
+            MockLLM.return_value = llm
+
+            tts = MagicMock()
+            tts.synthesize.return_value = b"fakemp3"
+            MockTTS.return_value = tts
+
+            with TestClient(app) as client:
+                resp = client.post("/chat_text_stream",
+                                   data={"text": "hi", "session_id": "s1"})
+
+        assert len(resp.content) == 0
