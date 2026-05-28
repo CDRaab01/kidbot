@@ -260,9 +260,7 @@ class AudioManager:
             stderr=subprocess.PIPE,
         )
         try:
-            proc.stdin.write(bytes(buf))
-            proc.stdin.close()
-            _, stderr = proc.communicate()
+            _, stderr = proc.communicate(input=bytes(buf))
             if proc.returncode != 0:
                 logger.warning("Volume blip aplay failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
         except (BrokenPipeError, OSError) as e:
