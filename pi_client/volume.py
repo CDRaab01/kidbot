@@ -38,22 +38,26 @@ class VolumeRocker:
     volume change so the display overlay can be updated without blocking.
     """
 
-    def __init__(self, on_change=None):
+    def __init__(self, on_change=None, use_gpio: bool = True):
         self._on_change = on_change
         self._lock = threading.Lock()
+        self._use_gpio = use_gpio
 
-        # BCM mode may already be set by PushToTalkButton — idempotent
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(VOL_UP_PIN,   GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.setup(VOL_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        if use_gpio:
+            # BCM mode may already be set by PushToTalkButton — idempotent
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(VOL_UP_PIN,   GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            GPIO.setup(VOL_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-        GPIO.add_event_detect(VOL_UP_PIN,   GPIO.FALLING, callback=self._on_up,   bouncetime=150)
-        GPIO.add_event_detect(VOL_DOWN_PIN, GPIO.FALLING, callback=self._on_down, bouncetime=150)
+            GPIO.add_event_detect(VOL_UP_PIN,   GPIO.FALLING, callback=self._on_up,   bouncetime=150)
+            GPIO.add_event_detect(VOL_DOWN_PIN, GPIO.FALLING, callback=self._on_down, bouncetime=150)
 
-        logger.info(
-            "VolumeRocker ready (up=GPIO%d, down=GPIO%d, step=%d%%)",
-            VOL_UP_PIN, VOL_DOWN_PIN, VOL_STEP,
-        )
+            logger.info(
+                "VolumeRocker ready (up=GPIO%d, down=GPIO%d, step=%d%%)",
+                VOL_UP_PIN, VOL_DOWN_PIN, VOL_STEP,
+            )
+        else:
+            logger.info("VolumeRocker ready (keyboard mode, step=%d%%)", VOL_STEP)
 
     # ------------------------------------------------------------------
     # GPIO callbacks — run in RPi.GPIO thread; hand off immediately
@@ -103,5 +107,6 @@ class VolumeRocker:
     # ------------------------------------------------------------------
 
     def cleanup(self) -> None:
-        GPIO.remove_event_detect(VOL_UP_PIN)
-        GPIO.remove_event_detect(VOL_DOWN_PIN)
+        if self._use_gpio:
+            GPIO.remove_event_detect(VOL_UP_PIN)
+            GPIO.remove_event_detect(VOL_DOWN_PIN)

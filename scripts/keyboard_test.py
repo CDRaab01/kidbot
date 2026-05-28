@@ -37,7 +37,7 @@ def _on_volume_change(pct: int) -> None:
     logger.info("Volume: %d%%", pct)
     audio.play_volume_blip(pct)
 
-volume = VolumeRocker(on_change=_on_volume_change)
+volume = VolumeRocker(on_change=_on_volume_change, use_gpio=False)
 
 _recording = False
 _recording_start = 0.0
