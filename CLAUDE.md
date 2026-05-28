@@ -1,7 +1,42 @@
 # KidBot — Claude Code Guide
 
 ## Project in one sentence
-KidBot is a FastAPI voice chatbot for a young child: a Raspberry Pi Zero WH captures audio, sends it to a Windows PC server, which runs Whisper (STT) + Gemma 4 via LM Studio (LLM) + Kokoro (TTS) and streams back MP3 audio with an image URL.
+KidBot is a FastAPI voice chatbot for a young child: a Raspberry Pi Zero 2W handheld captures audio, sends it to a Windows PC server, which runs Whisper (STT) + Gemma 4 via LM Studio (LLM) + Kokoro (TTS) and streams back MP3 audio with an image URL.
+
+## Hardware
+
+### Pi Zero 2W (the handheld device)
+| Component | Details |
+|---|---|
+| **SBC** | Raspberry Pi Zero 2W — ARMv8 quad-core 1 GHz, 32-bit Raspberry Pi OS Lite |
+| **Audio HAT** | Seeed ReSpeaker 2-Mic HAT v2 — TLV320AIC3104 codec (I2C 0x18), 2× analog MEMS mics on Line1L/Line1R |
+| **Speaker amp** | NS4150 Class-D on the HAT, driven by AIC3104 Line output |
+| **Button** | Arcade-style push button — GPIO17 (input, pull-up) / GND |
+| **LED** | GPIO27 → 220 Ω → LED → GND (status indicator) |
+| **Volume rocker** | Up = GPIO5, Down = GPIO6 (both input, pull-up) / GND |
+| **Display** | TBD — wiring pending; `luma` driver module not yet installed |
+
+### Audio driver notes (Pi Zero 2W)
+- **Driver**: mainline `snd_soc_tlv320aic3x` (kernel 6.18+). seeed-voicecard DKMS fails on ARMv7 6.18 (API changes).
+- **Overlay**: custom `aic3104-soundcard.dtbo` compiled from DTS source in `pi_setup/setup_2w.sh`.
+- **MICBIAS**: 2.5 V set via DTS property `ai3x-micbias-vg = <2>` — no i2cset needed.
+- **ADC warmup**: sigma-delta HPF takes ~2 s to settle after stream open. `AudioManager` pre-opens the mic stream at init and keeps it running so the first button press records clean audio.
+- **Mixer persistence**: `alsactl store 1` saves state to `/var/lib/alsa/asound.state`; restored on next boot by alsa-utils.
+- **Startup sound**: Mario jingle generated once to `pi_client/mario_startup.wav` and played via `aplay` on every boot.
+
+### Key GPIO assignments
+```
+GPIO 5   — Volume down
+GPIO 6   — Volume up
+GPIO 17  — Push-to-talk button (active low)
+GPIO 18  — PCM_CLK / I2S BCLK (ALT0, forced via gpio=18=a0 in config.txt)
+GPIO 27  — Status LED
+```
+
+### Server (Windows PC)
+- Docker Desktop runs the FastAPI container.
+- LM Studio runs natively, reachable from the container at `http://host.docker.internal:1234`.
+- Server URL configured in the Pi's systemd service environment as `KIDBOT_SERVER`.
 
 ## Repo layout
 
