@@ -65,6 +65,14 @@ class VolumeRocker:
     def _on_down(self, _channel):
         threading.Thread(target=self._adjust, args=(-VOL_STEP,), daemon=True).start()
 
+    def step_up(self):
+        """Programmatically increase volume by one step (e.g. from keyboard test)."""
+        threading.Thread(target=self._adjust, args=(+VOL_STEP,), daemon=True).start()
+
+    def step_down(self):
+        """Programmatically decrease volume by one step (e.g. from keyboard test)."""
+        threading.Thread(target=self._adjust, args=(-VOL_STEP,), daemon=True).start()
+
     # ------------------------------------------------------------------
     # Volume adjustment
     # ------------------------------------------------------------------
