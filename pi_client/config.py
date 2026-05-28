@@ -34,7 +34,7 @@ DISPLAY_FPS       = int(os.getenv("DISPLAY_FPS", "8"))   # 8 fps suits Pi Zero W
 # Volume rocker (BCM numbering)
 VOL_UP_PIN   = int(os.getenv("VOL_UP_PIN",   "5"))   # physical pin 29
 VOL_DOWN_PIN = int(os.getenv("VOL_DOWN_PIN", "6"))   # physical pin 31
-VOL_STEP     = int(os.getenv("VOL_STEP",     "5"))   # percent per press
+VOL_STEP     = int(os.getenv("VOL_STEP",     "11"))  # percent per press (~1 hardware step on AIC3104 Line control, 0-9 range)
 VOL_MIN      = int(os.getenv("VOL_MIN",      "0"))
 VOL_MAX      = int(os.getenv("VOL_MAX",      "100"))
 ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "Line")

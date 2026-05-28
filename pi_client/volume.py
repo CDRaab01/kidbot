@@ -87,6 +87,13 @@ class VolumeRocker:
             if new_pct == current:
                 return  # already at limit — skip display flash
             _set_volume(new_pct, ALSA_CONTROL)
+            # Read back the actual hardware value — controls with limited steps
+            # (e.g. AIC3104 Line: 0-9) quantise the requested % so the real
+            # level may differ from new_pct.  If it didn't move, skip callback.
+            actual_pct = _get_volume(ALSA_CONTROL)
+            if actual_pct is None or actual_pct == current:
+                return
+            new_pct = actual_pct
 
         if self._on_change:
             threading.Thread(target=self._on_change, args=(new_pct,), daemon=True).start()
