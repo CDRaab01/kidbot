@@ -26,6 +26,8 @@ class AudioManager:
         self._recording = False
         self._frames: list[bytes] = []
         self._stream: pyaudio.Stream | None = None
+        self._playback_proc: subprocess.Popen | None = None
+        self._playback_lock = threading.Lock()
 
         # Pre-open the mic stream so the ADC sigma-delta HPF settles before
         # the first button press.  The idle loop drains the hardware buffer
@@ -192,14 +194,36 @@ class AudioManager:
         subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def stop_playback(self) -> None:
+        """Kill any active mpg123 playback immediately."""
+        with self._playback_lock:
+            proc = self._playback_proc
+            self._playback_proc = None
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+
     def play_mp3(self, mp3_data: bytes):
         """Write MP3 to a temp file and play it via mpg123."""
         fd, path = tempfile.mkstemp(suffix=".mp3")
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(mp3_data)
-            subprocess.run(["mpg123", "-q", path], check=True)
+            proc = subprocess.Popen(
+                ["mpg123", "-q", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            with self._playback_lock:
+                self._playback_proc = proc
+            proc.wait()
         finally:
+            with self._playback_lock:
+                if self._playback_proc is proc:
+                    self._playback_proc = None
             os.unlink(path)
 
     def play_mp3_stream(self, chunks) -> None:
@@ -210,13 +234,21 @@ class AudioManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        with self._playback_lock:
+            self._playback_proc = proc
         try:
             for chunk in chunks:
+                if proc.poll() is not None:
+                    break  # killed externally
                 proc.stdin.write(chunk)
             proc.stdin.close()
             proc.wait()
         except (BrokenPipeError, OSError):
             proc.kill()
+        finally:
+            with self._playback_lock:
+                if self._playback_proc is proc:
+                    self._playback_proc = None
 
     def cleanup(self):
         self._recording = False

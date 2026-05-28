@@ -118,6 +118,7 @@ def main():
             logger.info("Quitting.")
             if _recording:
                 audio.stop_recording()
+            audio.stop_playback()          # cut off any active mpg123 immediately
             audio.play_shutdown_sound()
             audio.cleanup()
             volume.cleanup()
