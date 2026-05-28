@@ -237,6 +237,12 @@ class AudioManager:
         import math
         import struct as _struct
 
+        # Re-assert PCM level — mpg123 can reset it to 0 on exit
+        subprocess.run(
+            ["amixer", "sset", ALSA_CONTROL, f"{pct}%"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
         R = 48000
         n = int(R * 0.08)                          # 80 ms
         freq = 300.0 * (4.0 ** (pct / 100.0))      # 300 Hz → 1200 Hz log
@@ -251,13 +257,16 @@ class AudioManager:
             ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         try:
             proc.stdin.write(bytes(buf))
             proc.stdin.close()
-            proc.wait()
-        except (BrokenPipeError, OSError):
+            _, stderr = proc.communicate()
+            if proc.returncode != 0:
+                logger.warning("Volume blip aplay failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
+        except (BrokenPipeError, OSError) as e:
+            logger.warning("Volume blip error: %s", e)
             proc.kill()
 
     def stop_playback(self) -> None:
