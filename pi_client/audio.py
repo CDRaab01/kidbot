@@ -242,7 +242,7 @@ class AudioManager:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-        R = 48000
+        R = SAMPLE_RATE  # match the open capture stream's clock rate
         n = int(R * 0.08)                          # 80 ms
         freq = 300.0 * (4.0 ** (pct / 100.0))      # 300 Hz → 1200 Hz log
         attack  = max(1, int(R * 0.008))            # 8 ms attack
@@ -256,7 +256,7 @@ class AudioManager:
         try:
             stream = self._pa.open(
                 format=pyaudio.paInt16,
-                channels=1,
+                channels=CHANNELS,
                 rate=R,
                 output=True,
                 output_device_index=self._device_index,
