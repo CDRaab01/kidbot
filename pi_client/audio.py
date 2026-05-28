@@ -263,17 +263,18 @@ class AudioManager:
             v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
             _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
 
-        # Use the default ALSA device (dmix) so we share the same mixing path
-        # as mpg123. plughw:1,0 conflicts with dmix holding hw:1,0 open.
         proc = subprocess.Popen(
             ["aplay", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         try:
-            proc.communicate(input=bytes(buf))
-        except (BrokenPipeError, OSError):
+            _, stderr = proc.communicate(input=bytes(buf))
+            if proc.returncode != 0:
+                logger.warning("Volume blip failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
+        except (BrokenPipeError, OSError) as e:
+            logger.warning("Volume blip error: %s", e)
             proc.kill()
 
     def stop_playback(self) -> None:
