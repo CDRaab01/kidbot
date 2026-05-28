@@ -103,40 +103,44 @@ class AudioManager:
         return path
 
     def play_startup_sound(self):
-        """Generate mario jingle (once) and play it through the speaker."""
+        """Generate 8-bit startup jingle (once) and play it through the speaker."""
         import math
         import struct as _struct
-        sound_path = os.path.join(os.path.dirname(__file__), "mario_startup.wav")
+        sound_path = os.path.join(os.path.dirname(__file__), "startup.wav")
         if not os.path.exists(sound_path):
             R = 48000
-            U = int(R * 60 / 200 / 4)  # 16th note at 200 BPM
 
-            def sq(f, n):
+            def sq(f, dur, v=0.45, a=40, r=1200):
+                n = int(R * dur)
                 return [
-                    sum(math.sin(6.28 * f * (2*k-1) * i / R) / (2*k-1) for k in range(1, 4))
-                    / 2 * 0.5 * min(1, i / 80) * min(1, (n - i) / 150)
+                    ((math.sin(6.28 * f * i / R) > 0) * 0.8 - 0.4
+                     + sum(math.sin(6.28 * f * (2*k-1) * i / R) / (2*k-1) for k in range(1, 4)) / 3)
+                    * v * min(1, i / a) * min(1, (n - i) / r)
                     for i in range(n)
                 ]
 
-            notes = [
-                (659,2),(659,2),(0,2),(659,2),(0,2),(523,2),(659,2),(0,2),
-                (784,4),(0,4),(392,4),(0,4),
-                (523,3),(0,1),(392,3),(0,3),(330,3),(0,1),
-                (440,2),(0,2),(494,2),(0,2),(466,2),(440,2),(0,2),
-                (392,3),(659,3),(784,3),(880,2),(0,2),(698,2),(784,2),
-                (0,2),(659,2),(0,2),(523,2),(587,2),(494,2),(0,4),
-            ]
-            buf = []
-            for f, b in notes:
-                n = U * b
-                buf += sq(f, n) if f else [0.0] * n
+            def mx(buf, pos, wave_data):
+                for i, v in enumerate(wave_data):
+                    idx = pos + i
+                    if idx < len(buf):
+                        buf[idx] = max(-1.0, min(1.0, buf[idx] + v))
+
+            buf = [0.0] * int(R * 4)
+            for f, t in [(262,.0),(330,.18),(392,.36),(523,.56),(659,.76),(784,.96),(1047,1.2)]:
+                mx(buf, int(R * t), sq(f, 0.3))
+            for f in [523, 659, 784, 1047]:
+                mx(buf, int(R * 1.6), sq(f, 1.8, 0.28, 40, 7000))
+            n = int(R * 0.08)
+            hit = [((i % 3 == 0) * 2 - 1) * 0.35 * min(1, i / 20) * min(1, (n - i) / 300)
+                   for i in range(n)]
+            mx(buf, int(R * 1.6), hit)
 
             with wave.open(sound_path, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(R)
                 for v in buf:
-                    s = max(-32768, min(32767, int(v * 28000)))
+                    s = max(-32768, min(32767, int(v * 27000)))
                     wf.writeframes(_struct.pack("<h", s))
             logger.info("Generated startup sound: %s", sound_path)
 
