@@ -1,0 +1,21 @@
+[Unit]
+Description=KidBot voice assistant
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/kidbot
+ExecStart=/usr/bin/python3 -m pi_client
+Restart=on-failure
+RestartSec=5
+
+# Override any of these in /etc/systemd/system/kidbot.service.d/local.conf
+Environment=KIDBOT_SERVER=http://192.168.1.100:8765
+Environment=KIDBOT_API_KEY=
+Environment=KIDBOT_LOG_FILE=/home/pi/kidbot/logs/kidbot.log
+Environment=STARTUP_VOLUME=45
+
+[Install]
+WantedBy=multi-user.target
