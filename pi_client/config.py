@@ -36,5 +36,5 @@ VOL_UP_PIN   = int(os.getenv("VOL_UP_PIN",   "5"))   # physical pin 29
 VOL_DOWN_PIN = int(os.getenv("VOL_DOWN_PIN", "6"))   # physical pin 31
 VOL_STEP     = int(os.getenv("VOL_STEP",     "5"))   # percent per press (~6 hardware steps on AIC3104 PCM control, 0-127 range = 3 dB)
 VOL_MIN      = int(os.getenv("VOL_MIN",      "0"))
-VOL_MAX      = int(os.getenv("VOL_MAX",      "100"))
+VOL_MAX      = int(os.getenv("VOL_MAX",      "85"))   # PCM >85% (~107/127) drives the NS4150 amp into clipping
 ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "PCM")
