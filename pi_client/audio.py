@@ -230,9 +230,8 @@ class AudioManager:
         """Play a short pitch-scaled blip to confirm a volume change.
 
         Frequency scales on a log curve from ~300 Hz (0 %) to ~1200 Hz (100 %)
-        so the blip audibly reflects the new level.  Runs synchronously but
-        only takes ~80 ms; call from a daemon thread so it doesn't block.
-        Silently ignored if the audio device is busy.
+        so the blip audibly reflects the new level.  Uses PyAudio for output
+        so it shares the device cleanly with the always-open capture stream.
         """
         import math
         import struct as _struct
@@ -253,19 +252,21 @@ class AudioManager:
             env = min(1.0, i / attack) * min(1.0, (n - i) / release)
             v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
             _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
-        proc = subprocess.Popen(
-            ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+
         try:
-            _, stderr = proc.communicate(input=bytes(buf))
-            if proc.returncode != 0:
-                logger.warning("Volume blip aplay failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
-        except (BrokenPipeError, OSError) as e:
+            stream = self._pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=R,
+                output=True,
+                output_device_index=self._device_index,
+                frames_per_buffer=len(buf) // 2,
+            )
+            stream.write(bytes(buf))
+            stream.stop_stream()
+            stream.close()
+        except Exception as e:
             logger.warning("Volume blip error: %s", e)
-            proc.kill()
 
     def stop_playback(self) -> None:
         """Kill any active mpg123 playback immediately."""
