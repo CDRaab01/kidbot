@@ -37,4 +37,4 @@ VOL_DOWN_PIN = int(os.getenv("VOL_DOWN_PIN", "6"))   # physical pin 31
 VOL_STEP     = int(os.getenv("VOL_STEP",     "5"))   # percent per press
 VOL_MIN      = int(os.getenv("VOL_MIN",      "0"))
 VOL_MAX      = int(os.getenv("VOL_MAX",      "100"))
-ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "Master")
+ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "Line")
