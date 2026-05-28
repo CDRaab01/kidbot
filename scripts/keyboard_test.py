@@ -5,7 +5,9 @@ Run from the kidbot directory:
     python3 scripts/keyboard_test.py
 
 Keys:
-    SPACE   — press to start recording, press again to stop & submit
+    SPACE   — first press starts recording; press again to stop & submit
+              (auto-repeat is debounced — must hold for at least 0.5 s before
+              a second SPACE is accepted as a stop command)
     + / =   — volume up
     -       — volume down
     q       — quit
@@ -31,17 +33,20 @@ logger = logging.getLogger("keyboard_test")
 # ── init subsystems ───────────────────────────────────────────────
 audio = AudioManager()
 client = ServerClient()
-volume = VolumeRocker()
+volume = VolumeRocker(on_change=lambda pct: logger.info("Volume: %d%%", pct))
 
 _recording = False
+_recording_start = 0.0
+_MIN_RECORD_SECONDS = 0.5   # ignore SPACE auto-repeat within this window
 _busy = threading.Lock()
 
 
 def on_press():
-    global _recording
+    global _recording, _recording_start
     if not _busy.acquire(blocking=False):
         return
     _recording = True
+    _recording_start = time.time()
     audio.start_recording()
     logger.info("🔴 Recording... (press SPACE to stop)")
 
@@ -90,7 +95,7 @@ def main():
     audio.play_startup_sound()
 
     print("\n  KidBot keyboard test")
-    print("  SPACE = start/stop recording  |  + = vol up  |  - = vol down  |  q = quit\n")
+    print("  SPACE = start / stop recording  |  + = vol up  |  - = vol down  |  q = quit\n")
 
     while True:
         ch = getch()
@@ -98,7 +103,7 @@ def main():
         if ch == " ":
             if not _recording:
                 threading.Thread(target=on_press, daemon=True).start()
-            else:
+            elif time.time() - _recording_start >= _MIN_RECORD_SECONDS:
                 threading.Thread(target=on_release, daemon=True).start()
 
         elif ch in ("+", "="):
