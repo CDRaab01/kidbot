@@ -7,7 +7,7 @@ import wave
 
 import pyaudio
 
-from .config import CHANNELS, CHUNK_SIZE, MAX_RECORD_SECONDS, MIC_DEVICE_HINT, SAMPLE_RATE
+from .config import ALSA_CONTROL, CHANNELS, CHUNK_SIZE, MAX_RECORD_SECONDS, MIC_DEVICE_HINT, SAMPLE_RATE, STARTUP_VOLUME
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +146,9 @@ class AudioManager:
                     wf.writeframes(_struct.pack("<h", s))
             logger.info("Generated startup sound: %s", sound_path)
 
-        subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with self._chime_volume():
+            subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def play_shutdown_sound(self):
         """Generate 8-bit shutdown chime (once) and play it through the speaker."""
@@ -191,8 +192,39 @@ class AudioManager:
                     wf.writeframes(_struct.pack("<h", s))
             logger.info("Generated shutdown sound: %s", sound_path)
 
-        subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with self._chime_volume():
+            subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _chime_volume(self):
+        """Context manager: set PCM to STARTUP_VOLUME, restore on exit."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            try:
+                out = subprocess.check_output(
+                    ["amixer", "sget", ALSA_CONTROL], text=True, stderr=subprocess.DEVNULL
+                )
+                import re
+                m = re.search(r"\[(\d+)%\]", out)
+                prev = m.group(1) if m else None
+            except Exception:
+                prev = None
+            subprocess.run(
+                ["amixer", "sset", ALSA_CONTROL, f"{STARTUP_VOLUME}%"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            try:
+                yield
+            finally:
+                if prev is not None:
+                    subprocess.run(
+                        ["amixer", "sset", ALSA_CONTROL, f"{prev}%"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+
+        return _ctx()
 
     def stop_playback(self) -> None:
         """Kill any active mpg123 playback immediately."""
