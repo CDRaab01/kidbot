@@ -147,6 +147,51 @@ class AudioManager:
         subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def play_shutdown_sound(self):
+        """Generate 8-bit shutdown chime (once) and play it through the speaker."""
+        import math
+        import struct as _struct
+        sound_path = os.path.join(os.path.dirname(__file__), "shutdown.wav")
+        if not os.path.exists(sound_path):
+            R = 48000
+
+            def sq(f, dur, v=0.45, a=40, r=1200):
+                n = int(R * dur)
+                return [
+                    ((math.sin(6.28 * f * i / R) > 0) * 0.8 - 0.4
+                     + sum(math.sin(6.28 * f * (2*k-1) * i / R) / (2*k-1) for k in range(1, 4)) / 3)
+                    * v * min(1, i / a) * min(1, (n - i) / r)
+                    for i in range(n)
+                ]
+
+            def mx(buf, pos, wave_data):
+                for i, v in enumerate(wave_data):
+                    idx = pos + i
+                    if idx < len(buf):
+                        buf[idx] = max(-1.0, min(1.0, buf[idx] + v))
+
+            buf = [0.0] * int(R * 3.5)
+            for f, t in [(1047,.0),(784,.18),(659,.36),(523,.56),(392,.76),(262,.96)]:
+                mx(buf, int(R * t), sq(f, 0.3))
+            for f in [262, 392, 523]:
+                mx(buf, int(R * 1.3), sq(f, 1.8, 0.22, 40, 9000))
+            n = int(R * 0.08)
+            hit = [((i % 3 == 0) * 2 - 1) * 0.3 * min(1, i / 20) * min(1, (n - i) / 300)
+                   for i in range(n)]
+            mx(buf, int(R * 1.3), hit)
+
+            with wave.open(sound_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(R)
+                for v in buf:
+                    s = max(-32768, min(32767, int(v * 27000)))
+                    wf.writeframes(_struct.pack("<h", s))
+            logger.info("Generated shutdown sound: %s", sound_path)
+
+        subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def play_mp3(self, mp3_data: bytes):
         """Write MP3 to a temp file and play it via mpg123."""
         fd, path = tempfile.mkstemp(suffix=".mp3")

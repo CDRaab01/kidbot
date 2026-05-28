@@ -103,6 +103,7 @@ def on_release():
 
 def shutdown(sig=None, _frame=None):
     logger.info("Shutting down KidBot.")
+    audio.play_shutdown_sound()
     display.cleanup()
     volume_rocker.cleanup()
     button.cleanup()
