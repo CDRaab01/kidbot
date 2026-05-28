@@ -91,7 +91,17 @@ class AudioManager:
     def stop_recording(self) -> str:
         """Stop recording and return path to a temp WAV file (caller must delete it)."""
         self._recording = False
-        # Keep the stream open so the ADC stays warm for the next recording.
+        # If using the fallback default mic (no specific device found), close the
+        # stream so aplay/mpg123 can open the device without "device busy" errors.
+        # The specific device (ReSpeaker/AIC3104) stays open for ADC warmup.
+        if self._device_index is None and self._stream is not None:
+            stream = self._stream
+            self._stream = None  # signals _idle_loop to exit
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
 
         fd, path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
@@ -230,8 +240,8 @@ class AudioManager:
         """Play a short pitch-scaled blip to confirm a volume change.
 
         Frequency scales on a log curve from ~300 Hz (0 %) to ~1200 Hz (100 %)
-        so the blip audibly reflects the new level.  Uses PyAudio for output
-        so it shares the device cleanly with the always-open capture stream.
+        so the blip audibly reflects the new level.  Silently skipped if the
+        audio device is busy (e.g. during mpg123 playback).
         """
         import math
         import struct as _struct
@@ -242,7 +252,7 @@ class AudioManager:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-        R = SAMPLE_RATE  # match the open capture stream's clock rate
+        R = 48000
         n = int(R * 0.08)                          # 80 ms
         freq = 300.0 * (4.0 ** (pct / 100.0))      # 300 Hz → 1200 Hz log
         attack  = max(1, int(R * 0.008))            # 8 ms attack
@@ -253,20 +263,16 @@ class AudioManager:
             v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
             _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
 
+        proc = subprocess.Popen(
+            ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         try:
-            stream = self._pa.open(
-                format=pyaudio.paInt16,
-                channels=CHANNELS,
-                rate=R,
-                output=True,
-                output_device_index=self._device_index,
-                frames_per_buffer=len(buf) // 2,
-            )
-            stream.write(bytes(buf))
-            stream.stop_stream()
-            stream.close()
-        except Exception as e:
-            logger.warning("Volume blip error: %s", e)
+            proc.communicate(input=bytes(buf))
+        except (BrokenPipeError, OSError):
+            proc.kill()
 
     def stop_playback(self) -> None:
         """Kill any active mpg123 playback immediately."""
