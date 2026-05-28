@@ -33,7 +33,11 @@ logger = logging.getLogger("keyboard_test")
 # ── init subsystems ───────────────────────────────────────────────
 audio = AudioManager()
 client = ServerClient()
-volume = VolumeRocker(on_change=lambda pct: logger.info("Volume: %d%%", pct))
+def _on_volume_change(pct: int) -> None:
+    logger.info("Volume: %d%%", pct)
+    audio.play_volume_blip(pct)
+
+volume = VolumeRocker(on_change=_on_volume_change)
 
 _recording = False
 _recording_start = 0.0

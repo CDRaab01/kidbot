@@ -40,7 +40,11 @@ button = PushToTalkButton()
 audio = AudioManager()
 client = ServerClient()
 display = DisplayManager()
-volume_rocker = VolumeRocker(on_change=display.show_volume)
+def _on_volume_change(pct: int) -> None:
+    display.show_volume(pct)
+    audio.play_volume_blip(pct)
+
+volume_rocker = VolumeRocker(on_change=_on_volume_change)
 
 _busy_lock = threading.Lock()  # prevents overlapping sessions
 

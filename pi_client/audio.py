@@ -226,6 +226,40 @@ class AudioManager:
 
         return _ctx()
 
+    def play_volume_blip(self, pct: int) -> None:
+        """Play a short pitch-scaled blip to confirm a volume change.
+
+        Frequency scales on a log curve from ~300 Hz (0 %) to ~1200 Hz (100 %)
+        so the blip audibly reflects the new level.  Runs synchronously but
+        only takes ~80 ms; call from a daemon thread so it doesn't block.
+        Silently ignored if the audio device is busy.
+        """
+        import math
+        import struct as _struct
+
+        R = 48000
+        n = int(R * 0.08)                          # 80 ms
+        freq = 300.0 * (4.0 ** (pct / 100.0))      # 300 Hz → 1200 Hz log
+        attack  = max(1, int(R * 0.008))            # 8 ms attack
+        release = max(1, int(R * 0.025))            # 25 ms release
+        buf = bytearray(n * 2)
+        for i in range(n):
+            env = min(1.0, i / attack) * min(1.0, (n - i) / release)
+            v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
+            _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
+        proc = subprocess.Popen(
+            ["aplay", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            proc.stdin.write(bytes(buf))
+            proc.stdin.close()
+            proc.wait()
+        except (BrokenPipeError, OSError):
+            proc.kill()
+
     def stop_playback(self) -> None:
         """Kill any active mpg123 playback immediately."""
         with self._playback_lock:
