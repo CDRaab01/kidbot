@@ -273,6 +273,14 @@ class AudioManager:
             _, stderr = proc.communicate(input=bytes(buf))
             if proc.returncode != 0:
                 logger.warning("Volume blip failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
+                try:
+                    held = subprocess.check_output(
+                        ["fuser", "/dev/snd/pcmC1D0p", "/dev/snd/pcmC1D0c"],
+                        stderr=subprocess.DEVNULL, text=True,
+                    ).strip()
+                    logger.warning("ALSA device held by PIDs: %s", held or "(none)")
+                except Exception:
+                    pass
         except (BrokenPipeError, OSError) as e:
             logger.warning("Volume blip error: %s", e)
             proc.kill()
