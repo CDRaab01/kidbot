@@ -263,27 +263,36 @@ class AudioManager:
             v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
             _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
 
-        proc = subprocess.Popen(
-            ["aplay", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        # PipeWire owns the hardware — go through it via paplay (PulseAudio API).
+        # Wrap PCM in a WAV header so paplay knows the format.
+        import io
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(R)
+            wf.writeframes(bytes(buf))
+        wav_bytes = wav_buf.getvalue()
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
         try:
-            _, stderr = proc.communicate(input=bytes(buf))
+            with os.fdopen(fd, "wb") as f:
+                f.write(wav_bytes)
+            proc = subprocess.Popen(
+                ["paplay", tmp_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = proc.communicate()
             if proc.returncode != 0:
                 logger.warning("Volume blip failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
-                try:
-                    held = subprocess.check_output(
-                        ["fuser", "/dev/snd/pcmC1D0p", "/dev/snd/pcmC1D0c"],
-                        stderr=subprocess.DEVNULL, text=True,
-                    ).strip()
-                    logger.warning("ALSA device held by PIDs: %s", held or "(none)")
-                except Exception:
-                    pass
-        except (BrokenPipeError, OSError) as e:
+        except Exception as e:
             logger.warning("Volume blip error: %s", e)
-            proc.kill()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
     def stop_playback(self) -> None:
         """Kill any active mpg123 playback immediately."""
