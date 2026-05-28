@@ -248,7 +248,7 @@ class AudioManager:
             v   = math.sin(2 * math.pi * freq * i / R) * env * 0.55
             _struct.pack_into("<h", buf, i * 2, max(-32768, min(32767, int(v * 32767))))
         proc = subprocess.Popen(
-            ["aplay", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
+            ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "48000", "-c", "1", "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
