@@ -38,4 +38,4 @@ VOL_STEP     = int(os.getenv("VOL_STEP",     "5"))   # percent per press (~6 har
 VOL_MIN      = int(os.getenv("VOL_MIN",      "0"))
 VOL_MAX      = int(os.getenv("VOL_MAX",      "85"))   # PCM >85% (~107/127) drives the NS4150 amp into clipping
 ALSA_CONTROL = os.getenv("ALSA_CONTROL",     "PCM")
-STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "55"))  # PCM % for boot/shutdown chimes
+STARTUP_VOLUME = int(os.getenv("STARTUP_VOLUME", "45"))  # PCM % for boot/shutdown chimes
