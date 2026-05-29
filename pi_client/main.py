@@ -63,6 +63,14 @@ def on_press():
 
 
 def on_release():
+    # Only handle a release that pairs with a press we accepted. GPIO.BOTH plus
+    # contact bounce can deliver an unpaired release (or a release whose press
+    # was rejected as busy); without this guard the finally block below would
+    # call release() on an unheld lock and raise RuntimeError.
+    if not _busy_lock.locked():
+        logger.debug("Ignoring unpaired button release.")
+        return
+
     logger.info("PTT released — processing...")
     button.led(False)
     button.blink(count=2, interval=0.15)
@@ -101,7 +109,12 @@ def on_release():
             time.sleep(2)
             display.set_state("IDLE")
     finally:
-        os.unlink(wav_path)
+        # Guard unlink so a missing temp file can never skip the release below
+        # and permanently wedge the button.
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
         _busy_lock.release()
 
 
