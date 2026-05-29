@@ -56,22 +56,43 @@ DEFAULT_TESTS: list[tuple[str, str]] = [
 # KidBot query
 # ---------------------------------------------------------------------------
 def _query_kidbot(message: str, session_id: str) -> tuple[str, str]:
-    """POST to /chat_text. Returns (bot_reply, image_url)."""
-    try:
-        resp = requests.post(
-            f"{SERVER}/chat_text",
-            data={"text": message, "session_id": session_id},
-            headers=_bot_headers,
-            timeout=90,
-        )
-        resp.raise_for_status()
-    except requests.ConnectionError:
-        print(f"[error] Cannot reach {SERVER} — is the server running?")
-        sys.exit(1)
-    except requests.HTTPError as exc:
-        print(f"[error] HTTP {exc.response.status_code}: {exc.response.text[:200]}")
-        return "", ""
-    return resp.headers.get("X-Reply", ""), resp.headers.get("X-Image-Url", "")
+    """POST to /chat_text. Returns (bot_reply, image_url).
+
+    The chat endpoint is rate-limited (5/min per IP) and slowapi keys on the
+    source address, so firing the whole test batch from one host trips the
+    limiter. On HTTP 429 we honour Retry-After and retry instead of counting
+    the throttled request as a failure.
+    """
+    for _ in range(6):
+        try:
+            resp = requests.post(
+                f"{SERVER}/chat_text",
+                data={"text": message, "session_id": session_id},
+                headers=_bot_headers,
+                timeout=90,
+            )
+        except requests.ConnectionError:
+            print(f"[error] Cannot reach {SERVER} — is the server running?")
+            sys.exit(1)
+
+        if resp.status_code == 429:
+            try:
+                wait = int(resp.headers.get("Retry-After", "")) + 1
+            except (TypeError, ValueError):
+                wait = 13
+            print(f"  Rate limited — waiting {wait}s before retrying...")
+            time.sleep(wait)
+            continue
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            print(f"[error] HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+            return "", ""
+        return resp.headers.get("X-Reply", ""), resp.headers.get("X-Image-Url", "")
+
+    print("[error] Still rate limited after several retries.")
+    return "", ""
 
 
 # ---------------------------------------------------------------------------
