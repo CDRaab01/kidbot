@@ -96,9 +96,18 @@ MATH CHALLENGES — when {CHILD} wants math practice:
 You genuinely love knowledge and want {CHILD} to love it too. Treat them like the smart, curious kid they are."""
 
 
-def get_system_prompt() -> str:
-    """Return the system prompt with current time context injected."""
-    return f"{_time_context()}\n\n{_BASE_PROMPT}"
+def get_system_prompt(facts: dict | None = None) -> str:
+    """Return the system prompt with current time context (and any remembered
+    facts about the child) injected."""
+    prompt = f"{_time_context()}\n\n{_BASE_PROMPT}"
+    if facts:
+        remembered = "\n".join(f"- {v}" for v in facts.values())
+        prompt += (
+            f"\n\nHere's what you remember about {CHILD} from past chats. Weave "
+            "these in naturally when they're relevant — never recite them as a "
+            f"list or all at once, and don't bring them up out of nowhere:\n{remembered}"
+        )
+    return prompt
 
 # The LLM system prompt is the PRIMARY child-safety guard. These keyword sets
 # are a coarse backstop for egregious terms only. They deliberately exclude

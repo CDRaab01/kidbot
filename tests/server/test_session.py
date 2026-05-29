@@ -282,3 +282,60 @@ class TestLoadFromDbCorruption:
 
         assert len(good_history) == 2  # good session intact
         assert bad_history == []       # corrupt session silently recovers
+
+
+class TestFacts:
+    def test_default_facts_empty(self):
+        store = SessionStore()
+        store.get_history("s1")
+        assert store.get_facts("s1") == {}
+
+    def test_update_and_get_facts(self):
+        store = SessionStore()
+        store.get_history("s1")
+        store.update_facts("s1", {"age": "they are 8 years old"})
+        assert store.get_facts("s1") == {"age": "they are 8 years old"}
+
+    def test_update_facts_merges_and_overwrites(self):
+        store = SessionStore()
+        store.get_history("s1")
+        store.update_facts("s1", {"age": "they are 8 years old", "pet": "they have a dog"})
+        store.update_facts("s1", {"age": "they are 9 years old"})  # newer overwrites
+        facts = store.get_facts("s1")
+        assert facts["age"] == "they are 9 years old"
+        assert facts["pet"] == "they have a dog"
+
+    def test_get_facts_returns_copy(self):
+        store = SessionStore()
+        store.get_history("s1")
+        store.update_facts("s1", {"pet": "they have a cat"})
+        store.get_facts("s1")["pet"] = "mutated"
+        assert store.get_facts("s1")["pet"] == "they have a cat"
+
+    def test_facts_unknown_session_empty(self):
+        assert SessionStore().get_facts("nobody") == {}
+
+    def test_facts_persist_to_sqlite(self, tmp_path):
+        db = str(tmp_path / "sessions.db")
+        store = SessionStore(db_path=db)
+        store.get_history("s1")
+        store.update_facts("s1", {"age": "they are 8 years old"})
+        # New store loading the same DB should see the fact.
+        store2 = SessionStore(db_path=db)
+        assert store2.get_facts("s1") == {"age": "they are 8 years old"}
+
+    def test_migrates_legacy_db_without_facts_column(self, tmp_path):
+        import sqlite3
+        db = str(tmp_path / "legacy.db")
+        # Create an old-schema table (no facts column) with a recent row.
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, "
+                     "messages TEXT NOT NULL, last_active REAL NOT NULL)")
+        conn.execute("INSERT INTO sessions VALUES (?, ?, ?)",
+                     ("s1", "[]", time.time()))
+        conn.commit(); conn.close()
+        # Opening with the new store should migrate and not crash.
+        store = SessionStore(db_path=db)
+        assert store.get_facts("s1") == {}
+        store.update_facts("s1", {"pet": "they have a dog"})
+        assert SessionStore(db_path=db).get_facts("s1") == {"pet": "they have a dog"}

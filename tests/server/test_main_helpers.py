@@ -209,6 +209,22 @@ class TestRunLlmPipelineImageFallback:
         assert url == ""
         fetch.assert_not_called()
 
+    def test_pipeline_passes_facts_and_stores_new_ones(self):
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url", return_value=""):
+            llm.respond.return_value = "Cool, a dog!"
+            sessions.get_history.return_value = []
+            sessions.get_facts.return_value = {"age": "they are 8 years old"}
+            sessions.get_shown_image_urls.return_value = []
+            main._run_llm_pipeline("I have a dog named Rex", "s1")
+        # Remembered facts were passed into the model...
+        assert llm.respond.call_args.kwargs["facts"] == {"age": "they are 8 years old"}
+        # ...and the newly-shared fact was stored.
+        stored = sessions.update_facts.call_args[0][1]
+        assert stored.get("pet") == "they have a dog named Rex"
+
     def test_explicit_tag_takes_priority_over_fallback(self):
         import server.main as main
         with patch.object(main, "_llm") as llm, \

@@ -49,6 +49,20 @@ class TestGetSystemPrompt:
             prompt = get_system_prompt()
         assert "late" in prompt.lower()
 
+    def test_facts_injected_when_provided(self):
+        prompt = get_system_prompt({"pet": "they have a dog named Rex",
+                                    "age": "they are 8 years old"})
+        assert "they have a dog named Rex" in prompt
+        assert "they are 8 years old" in prompt
+        assert "remember about" in prompt
+
+    def test_no_facts_section_when_empty(self):
+        assert "remember about" not in get_system_prompt()
+        assert "remember about" not in get_system_prompt({})
+
+    def test_base_prompt_still_present_with_facts(self):
+        assert _BASE_PROMPT in get_system_prompt({"age": "they are 8 years old"})
+
     def test_called_twice_returns_same_base_content(self):
         """get_system_prompt() is not cached — each call re-evaluates time."""
         p1 = get_system_prompt()

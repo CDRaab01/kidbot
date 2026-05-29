@@ -21,6 +21,7 @@ from .config import (API_KEY, BOT_NAME, LOG_BACKUP_COUNT, LOG_FILE, LOG_MAX_BYTE
                      PERSIST_SESSIONS, SERVER_HOST, SERVER_PORT, SESSION_DB_PATH, TEMP_DIR)
 from .image_search import fetch_image_url
 from .llm import LLMInterface
+from .memory import extract_facts
 from .session import SessionStore
 from .stt import SpeechToText
 from .tts import TextToSpeech
@@ -165,9 +166,11 @@ def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
     if _llm is None:
         raise HTTPException(status_code=503, detail="Models not ready")
     history = _sessions.get_history(session_id)
-    raw_reply = _llm.respond(text, history=history)
+    facts = _sessions.get_facts(session_id)
+    raw_reply = _llm.respond(text, history=history, facts=facts)
     reply_text, image_term = _extract_image(raw_reply)
     _sessions.add_exchange(session_id, text, reply_text)
+    _sessions.update_facts(session_id, extract_facts(text))
     if not image_term:
         # Model omitted the [IMAGE: ...] tag — if the child explicitly asked to
         # see a picture, search from their message (mirrors the streaming path).
@@ -311,6 +314,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     thread pool as it arrives, so playback begins before the LLM finishes.
     """
     history = _sessions.get_history(session_id)
+    facts = _sessions.get_facts(session_id)
     # Discard any image left unpolled from a previous turn so a stale URL can't
     # surface on this one.
     _sessions.reset_image(session_id)
@@ -319,7 +323,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
 
     def _producer():
         try:
-            for sentence in _llm.respond_stream(text, history):
+            for sentence in _llm.respond_stream(text, history, facts):
                 loop.call_soon_threadsafe(queue.put_nowait, ("s", sentence))
         except Exception as exc:
             loop.call_soon_threadsafe(queue.put_nowait, ("err", str(exc)))
@@ -359,6 +363,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         full_reply = " ".join(full_parts)
         _sessions.add_exchange(session_id, text, full_reply)
         _sessions.set_latest_reply(session_id, full_reply)
+        _sessions.update_facts(session_id, extract_facts(text))
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
         _spawn_image_fetch(session_id, image_term)

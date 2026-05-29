@@ -97,8 +97,8 @@ class LLMInterface:
         except Exception as exc:
             logger.warning("Could not reach LM Studio at %s: %s", LM_STUDIO_BASE_URL, exc)
 
-    def _build_messages(self, user_text: str, history: list | None) -> list:
-        messages = [{"role": "system", "content": get_system_prompt()}]
+    def _build_messages(self, user_text: str, history: list | None, facts: dict | None = None) -> list:
+        messages = [{"role": "system", "content": get_system_prompt(facts)}]
         if history:
             # Each exchange is 2 messages (user + assistant). Keep the most
             # recent N exchanges so the prompt never crowds out the response.
@@ -113,7 +113,8 @@ class LLMInterface:
         messages.append({"role": "user", "content": user_text})
         return messages
 
-    def respond(self, user_text: str, history: list | None = None) -> str:
+    def respond(self, user_text: str, history: list | None = None,
+                facts: dict | None = None) -> str:
         if not is_input_safe(user_text):
             logger.warning("Blocked input: %r", user_text)
             return redirect_response()
@@ -121,7 +122,7 @@ class LLMInterface:
         try:
             response = self.client.chat.completions.create(
                 model=LM_STUDIO_MODEL,
-                messages=self._build_messages(user_text, history),
+                messages=self._build_messages(user_text, history, facts),
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
             )
@@ -142,7 +143,8 @@ class LLMInterface:
         logger.info("LLM reply: %r", reply)
         return reply
 
-    def respond_stream(self, user_text: str, history: list | None = None) -> Iterator[str]:
+    def respond_stream(self, user_text: str, history: list | None = None,
+                       facts: dict | None = None) -> Iterator[str]:
         """Yield sentence-sized chunks from the LLM with per-sentence safety checks."""
         if not is_input_safe(user_text):
             logger.warning("Blocked input (stream): %r", user_text)
@@ -152,7 +154,7 @@ class LLMInterface:
         try:
             stream = self.client.chat.completions.create(
                 model=LM_STUDIO_MODEL,
-                messages=self._build_messages(user_text, history),
+                messages=self._build_messages(user_text, history, facts),
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
                 stream=True,
