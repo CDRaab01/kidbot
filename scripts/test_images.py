@@ -38,17 +38,21 @@ _bot_headers = {"X-API-Key": API_KEY} if API_KEY else {}
 # ---------------------------------------------------------------------------
 # Built-in test cases: (message to send, plain-English topic to verify)
 # ---------------------------------------------------------------------------
+# Prompts explicitly request a picture: the system prompt only emits an
+# [IMAGE: ...] tag on an explicit picture request, so "tell me about X" would
+# (correctly) return no image and fail this test. "show me a picture of X"
+# exercises the real image path.
 DEFAULT_TESTS: list[tuple[str, str]] = [
-    ("tell me about Spiderman",            "Spider-Man (the Marvel superhero in a red and blue costume)"),
-    ("tell me about Batman",               "Batman (the DC superhero in a dark cape and cowl)"),
-    ("tell me about Elsa from Frozen",     "Elsa from Frozen (a blonde woman with ice powers)"),
-    ("what is a blue whale?",              "a blue whale (the largest animal on Earth)"),
-    ("tell me about a T-Rex dinosaur",     "a Tyrannosaurus Rex dinosaur"),
-    ("what is a volcano?",                 "a volcano (mountain with lava or eruption)"),
-    ("tell me about the moon",             "the moon (Earth's natural satellite)"),
-    ("what is a rainbow?",                 "a rainbow (colourful arc in the sky)"),
-    ("tell me about an elephant",          "an elephant (large grey animal with a trunk)"),
-    ("what is the Eiffel Tower?",          "the Eiffel Tower (famous iron tower in Paris)"),
+    ("show me a picture of Spider-Man",        "Spider-Man (the Marvel superhero in a red and blue costume)"),
+    ("show me a picture of Batman",            "Batman (the DC superhero in a dark cape and cowl)"),
+    ("show me a picture of Elsa from Frozen",  "Elsa from Frozen (a blonde woman with ice powers)"),
+    ("show me a picture of a blue whale",      "a blue whale (the largest animal on Earth)"),
+    ("show me a picture of a T-Rex dinosaur",  "a Tyrannosaurus Rex dinosaur"),
+    ("show me a picture of a volcano",         "a volcano (mountain with lava or eruption)"),
+    ("show me a picture of the moon",          "the moon (Earth's natural satellite)"),
+    ("show me a picture of a rainbow",         "a rainbow (colourful arc in the sky)"),
+    ("show me a picture of an elephant",       "an elephant (large grey animal with a trunk)"),
+    ("show me a picture of the Eiffel Tower",  "the Eiffel Tower (famous iron tower in Paris)"),
 ]
 
 
@@ -56,22 +60,43 @@ DEFAULT_TESTS: list[tuple[str, str]] = [
 # KidBot query
 # ---------------------------------------------------------------------------
 def _query_kidbot(message: str, session_id: str) -> tuple[str, str]:
-    """POST to /chat_text. Returns (bot_reply, image_url)."""
-    try:
-        resp = requests.post(
-            f"{SERVER}/chat_text",
-            data={"text": message, "session_id": session_id},
-            headers=_bot_headers,
-            timeout=90,
-        )
-        resp.raise_for_status()
-    except requests.ConnectionError:
-        print(f"[error] Cannot reach {SERVER} — is the server running?")
-        sys.exit(1)
-    except requests.HTTPError as exc:
-        print(f"[error] HTTP {exc.response.status_code}: {exc.response.text[:200]}")
-        return "", ""
-    return resp.headers.get("X-Reply", ""), resp.headers.get("X-Image-Url", "")
+    """POST to /chat_text. Returns (bot_reply, image_url).
+
+    The chat endpoint is rate-limited (5/min per IP) and slowapi keys on the
+    source address, so firing the whole test batch from one host trips the
+    limiter. On HTTP 429 we honour Retry-After and retry instead of counting
+    the throttled request as a failure.
+    """
+    for _ in range(6):
+        try:
+            resp = requests.post(
+                f"{SERVER}/chat_text",
+                data={"text": message, "session_id": session_id},
+                headers=_bot_headers,
+                timeout=90,
+            )
+        except requests.ConnectionError:
+            print(f"[error] Cannot reach {SERVER} — is the server running?")
+            sys.exit(1)
+
+        if resp.status_code == 429:
+            try:
+                wait = int(resp.headers.get("Retry-After", "")) + 1
+            except (TypeError, ValueError):
+                wait = 13
+            print(f"  Rate limited — waiting {wait}s before retrying...")
+            time.sleep(wait)
+            continue
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            print(f"[error] HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+            return "", ""
+        return resp.headers.get("X-Reply", ""), resp.headers.get("X-Image-Url", "")
+
+    print("[error] Still rate limited after several retries.")
+    return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +227,12 @@ def main() -> None:
     topics     = [a for a in args if not a.startswith("--")]
 
     if topics:
-        # Single ad-hoc topic: turn the bare topic into a "tell me about X" query
-        # The user can also pass the full message in quotes.
+        # Single ad-hoc topic: turn the bare topic into an explicit picture
+        # request so the image path is exercised. A full message in quotes
+        # (lowercase, >3 words) is sent verbatim.
         topic = " ".join(topics)
         if not topic[0].islower() or len(topic.split()) <= 3:
-            message = f"tell me about {topic}"
+            message = f"show me a picture of {topic}"
         else:
             message = topic
         tests = [(message, topic)]

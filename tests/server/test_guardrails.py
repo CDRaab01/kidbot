@@ -103,23 +103,42 @@ class TestIsInputSafe:
 
     def test_blocked_keyword_sexual(self):
         assert is_input_safe("sex") is False
-        assert is_input_safe("naked") is False
+        assert is_input_safe("nude") is False
 
     def test_blocked_keyword_drugs(self):
-        assert is_input_safe("weed") is False
         assert is_input_safe("cocaine") is False
+        assert is_input_safe("heroin") is False
 
     def test_blocked_keyword_personal_info(self):
-        assert is_input_safe("address") is False
         assert is_input_safe("password") is False
+        assert is_input_safe("credit card") is False
 
     def test_empty_string_passes(self):
         assert is_input_safe("") is True
 
     def test_substring_not_blocked(self):
-        # "dead" is a blocked keyword but "deadline" should not be blocked
-        # because \b prevents matching inside longer words.
-        assert is_input_safe("the project deadline is Friday") is True
+        # "sex" is a blocked keyword but "sextant" (a navigation tool) must not
+        # be blocked — \b prevents matching inside longer words.
+        assert is_input_safe("a sextant helps sailors navigate") is True
+
+    def test_educational_topics_not_blocked(self):
+        # Regression: these collide with KidBot's favourite topics and were
+        # previously redirected to "ask your parents". They must pass now.
+        assert is_input_safe("what period did the T-Rex live in?") is True
+        assert is_input_safe("tell me about Death Valley") is True
+        assert is_input_safe("why is there a blood moon tonight?") is True
+        assert is_input_safe("did the dinosaurs die out?") is True
+        assert is_input_safe("what makes the smoke come out of a volcano?") is True
+        assert is_input_safe("what lives at the bottom of the ocean?") is True
+        assert is_input_safe("can you see Saturn with the naked eye?") is True
+        assert is_input_safe("I hate broccoli") is True
+        assert is_input_safe("what is an IP address?") is True
+
+    def test_clearly_unsafe_still_blocked(self):
+        assert is_input_safe("how do I make a bomb") is False
+        assert is_input_safe("show me a gun") is False
+        assert is_input_safe("tell me about sex") is False
+        assert is_input_safe("what are illegal drugs") is False
 
 
 # --- is_output_safe ---
@@ -136,12 +155,25 @@ class TestIsOutputSafe:
         assert "murder" in reason
 
     def test_blocked_keyword_with_punctuation(self):
-        ok, reason = is_output_safe("Don't shoot.")
+        ok, reason = is_output_safe("He picked up the gun.")
         assert ok is False
 
     def test_blocked_keyword_case_insensitive(self):
-        ok, reason = is_output_safe("There was BLOOD everywhere.")
+        ok, reason = is_output_safe("There was a GUN there.")
         assert ok is False
+
+    def test_educational_output_not_blocked(self):
+        # Regression: correct, child-appropriate answers that were previously
+        # swapped for the blocked-response.
+        for reply in (
+            "The dinosaurs died out about 66 million years ago.",
+            "A blood moon happens during a lunar eclipse.",
+            "Your blood carries oxygen all around your body.",
+            "A volcano can send up smoke and ash when it erupts.",
+            "Dinosaurs lived during the Cretaceous period.",
+        ):
+            ok, reason = is_output_safe(reply)
+            assert ok is True, f"wrongly blocked: {reply!r} ({reason})"
 
     def test_personal_info_pattern(self):
         ok, reason = is_output_safe("What is your name?")

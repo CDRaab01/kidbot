@@ -64,6 +64,35 @@ class TestShowVolume:
             assert dm._vol_pct is None
 
 
+class TestAnimateHeadless:
+    def test_headless_skips_rendering(self):
+        dm, disp_mod = _make_display()  # _init_device patched to None
+        assert dm._device is None
+
+        def stop_after_first(_):
+            dm._running = False  # exit the loop after one sleep
+
+        with patch.object(disp_mod, "_render_face") as mock_render, \
+             patch("time.sleep", side_effect=stop_after_first):
+            dm._running = True
+            dm._animate()
+        mock_render.assert_not_called()
+
+    def test_with_device_renders_and_displays(self):
+        dm, disp_mod = _make_display()
+        dm._device = MagicMock()
+
+        def stop_after_first(_):
+            dm._running = False
+
+        with patch.object(disp_mod, "_render_face", return_value=MagicMock()) as mock_render, \
+             patch("time.sleep", side_effect=stop_after_first):
+            dm._running = True
+            dm._animate()
+        mock_render.assert_called()
+        dm._device.display.assert_called()
+
+
 class TestDrawVolumeOverlay:
     def _make_draw(self):
         return MagicMock()

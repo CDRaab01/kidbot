@@ -26,6 +26,13 @@ _stub("faster_whisper", WhisperModel=MagicMock())
 # kokoro_onnx — used by server/tts.py
 _stub("kokoro_onnx", Kokoro=MagicMock())
 
+# pyaudio — used by pi_client/audio.py; not installed off-Pi.
+# Default to zero input devices so AudioManager() can be constructed at import
+# time (e.g. when importing pi_client.main) without opening a stream.
+_pa_instance = MagicMock()
+_pa_instance.get_device_count.return_value = 0
+_stub("pyaudio", PyAudio=MagicMock(return_value=_pa_instance), Stream=MagicMock, paInt16=8)
+
 # soundfile — used by server/tts.py
 _stub("soundfile", write=MagicMock())
 

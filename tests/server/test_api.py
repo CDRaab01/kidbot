@@ -102,6 +102,11 @@ class TestSpeak:
             resp = client.post("/speak", data={"text": "   "})
         assert resp.status_code == 400
 
+    def test_returns_503_when_models_not_ready(self):
+        with patch("server.main._tts", None):
+            resp = TestClient(app).post("/speak", data={"text": "hello"})
+        assert resp.status_code == 503
+
     def test_tts_called_with_provided_text(self):
         with _loaded_client() as (client, _, _, tts):
             client.post("/speak", data={"text": "say this"})
@@ -298,10 +303,15 @@ class TestAPIKeyAuth:
 
 @contextmanager
 def _loaded_stream_client(sentences=None, tts_bytes=b"fakemp3"):
-    """Like _loaded_client but configures llm.respond_stream with sentence chunks."""
+    """Like _loaded_client but configures llm.respond_stream with sentence chunks.
+
+    _spawn_image_fetch is stubbed so an [IMAGE: ...] tag in a streamed reply
+    doesn't kick off a real background image search (which would make a live
+    network call during the test suite)."""
     with patch("server.main.SpeechToText") as MockSTT, \
          patch("server.main.LLMInterface") as MockLLM, \
-         patch("server.main.TextToSpeech") as MockTTS:
+         patch("server.main.TextToSpeech") as MockTTS, \
+         patch("server.main._spawn_image_fetch"):
         stt = MagicMock()
         stt.transcribe.return_value = "hello world"
         MockSTT.return_value = stt
@@ -448,6 +458,24 @@ class TestLatestImageEndpoint:
         with _loaded_client() as (client, *_):
             resp2 = client.get("/session/img-test/latest_image")
         assert resp2.json()["image_url"] == ""
+
+
+class TestSessionIsolation:
+    """The shared SessionStore must not leak state between tests."""
+
+    def test_a_writes_a_leaky_image(self):
+        from server.main import _sessions
+        _sessions.get_history("leak-probe")
+        _sessions.set_latest_image("leak-probe", "https://upload.wikimedia.org/leak.jpg")
+        assert _sessions.get_and_clear_latest_image("leak-probe") != ""
+
+    def test_b_does_not_see_previous_test_state(self):
+        # Runs after test_a; the autouse reset fixture must have cleared it.
+        from server.main import _sessions
+        assert "leak-probe" not in _sessions._sessions
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/leak-probe/latest_image")
+        assert resp.json()["image_url"] == ""
 
 
 # ---------------------------------------------------------------------------

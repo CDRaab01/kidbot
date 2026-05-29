@@ -157,8 +157,19 @@ class AudioManager:
             logger.info("Generated startup sound: %s", sound_path)
 
         with self._chime_volume():
+            self._play_chime(sound_path)
+
+    def _play_chime(self, sound_path: str) -> None:
+        """aplay a fixed-length chime with a timeout so a stuck device can't
+        block startup/shutdown."""
+        try:
             subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("Chime playback timed out: %s", sound_path)
+        except Exception as exc:
+            logger.warning("Chime playback failed: %s", exc)
 
     def play_shutdown_sound(self):
         """Generate 8-bit shutdown chime (once) and play it through the speaker."""
@@ -203,8 +214,7 @@ class AudioManager:
             logger.info("Generated shutdown sound: %s", sound_path)
 
         with self._chime_volume():
-            subprocess.run(["aplay", "-D", "plughw:1,0", sound_path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._play_chime(sound_path)
 
     def _chime_volume(self):
         """Context manager: set PCM to STARTUP_VOLUME, restore on exit."""
@@ -283,8 +293,13 @@ class AudioManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
-            _, stderr = proc.communicate()
-            if proc.returncode != 0:
+            try:
+                _, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                logger.warning("Volume blip timed out — killed paplay.")
+                stderr = b""
+            if proc.returncode not in (0, None):
                 logger.warning("Volume blip failed (rc=%d): %s", proc.returncode, stderr.decode().strip())
         except Exception as e:
             logger.warning("Volume blip error: %s", e)

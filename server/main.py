@@ -53,9 +53,21 @@ SORRY_TRY_AGAIN  = "Hmm, I didn't quite catch that! Could you try saying it agai
 SORRY_CANT_THINK = "Oops, I got a bit muddled! Give me a moment and try again."
 
 
+def _warn_if_auth_disabled() -> None:
+    if not API_KEY:
+        logger.warning(
+            "No API key configured (KIDBOT_API_KEY is empty) — every endpoint "
+            "except /health is unauthenticated. Keep the server on a trusted LAN "
+            "and do not expose port %s to the internet. Set KIDBOT_API_KEY (and "
+            "the matching key on the Pi) to require an X-API-Key header.",
+            SERVER_PORT,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _stt, _llm, _tts
+    _warn_if_auth_disabled()
     logger.info("Loading models - this may take a moment...")
     _stt = SpeechToText()
     _llm = LLMInterface()
@@ -66,7 +78,7 @@ async def lifespan(app: FastAPI):
 
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title=f"{BOT_NAME} Server", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title=f"{BOT_NAME} Server", version="0.5.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -156,6 +168,10 @@ def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
     raw_reply = _llm.respond(text, history=history)
     reply_text, image_term = _extract_image(raw_reply)
     _sessions.add_exchange(session_id, text, reply_text)
+    if not image_term:
+        # Model omitted the [IMAGE: ...] tag — if the child explicitly asked to
+        # see a picture, search from their message (mirrors the streaming path).
+        image_term = _fallback_image_term(text)
     image_url = ""
     if image_term:
         logger.info("[%s] Fetching image for: %r", session_id, image_term)
@@ -177,11 +193,14 @@ async def health():
 @limiter.limit("20/minute")
 async def speak(request: Request, text: str = Form(...)):
     """Convert text to MP3. Used by the Pi to pre-fetch error audio clips."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
     if len(text) > 10_000:
         raise HTTPException(status_code=400, detail="Input too long")
-    return Response(content=_tts.synthesize(text), media_type="audio/mpeg")
+    mp3 = await run_in_threadpool(_tts.synthesize, text)
+    return Response(content=mp3, media_type="audio/mpeg")
 
 
 @app.post("/chat")
@@ -206,22 +225,25 @@ async def chat(
         with os.fdopen(tmp_fd, "wb") as f:
             f.write(audio_data)
 
+        # STT, LLM and TTS are all synchronous/CPU-bound; run them in the
+        # threadpool so a multi-second turn doesn't block the event loop (and
+        # stall /health, /latest_image, etc.).
         t0 = time.perf_counter()
-        text = _stt.transcribe(tmp_path)
+        text = await run_in_threadpool(_stt.transcribe, tmp_path)
         t_stt = time.perf_counter() - t0
 
         if not text:
             logger.info("[%s] No speech detected.", session_id)
-            return _mp3_response(SORRY_TRY_AGAIN)
+            return await run_in_threadpool(_mp3_response, SORRY_TRY_AGAIN)
 
         logger.info("[%s] STT: %.2fs  heard: %r", session_id, t_stt, text)
 
         t1 = time.perf_counter()
-        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        reply_text, image_url = await run_in_threadpool(_run_llm_pipeline, text, session_id)
         t_llm = time.perf_counter() - t1
 
         t2 = time.perf_counter()
-        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        mp3_response = await run_in_threadpool(_mp3_response, reply_text, text, image_url)
         t_tts = time.perf_counter() - t2
 
         logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
@@ -230,7 +252,7 @@ async def chat(
 
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
-        return _mp3_response(SORRY_CANT_THINK)
+        return await run_in_threadpool(_mp3_response, SORRY_CANT_THINK)
 
     finally:
         try:
@@ -256,18 +278,19 @@ async def chat_text(
         raise HTTPException(status_code=400, detail="Input too long")
     logger.info("[%s] Text input: %r", session_id, text)
     try:
+        # Offload the synchronous LLM + TTS work so the event loop stays free.
         t1 = time.perf_counter()
-        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        reply_text, image_url = await run_in_threadpool(_run_llm_pipeline, text, session_id)
         t_llm = time.perf_counter() - t1
         t2 = time.perf_counter()
-        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        mp3_response = await run_in_threadpool(_mp3_response, reply_text, text, image_url)
         t_tts = time.perf_counter() - t2
         logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
                     session_id, t_llm, t_tts, t_llm + t_tts)
         return mp3_response
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
-        return _mp3_response(SORRY_CANT_THINK)
+        return await run_in_threadpool(_mp3_response, SORRY_CANT_THINK)
 
 
 @app.delete("/session/{session_id}")
@@ -288,6 +311,9 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     thread pool as it arrives, so playback begins before the LLM finishes.
     """
     history = _sessions.get_history(session_id)
+    # Discard any image left unpolled from a previous turn so a stale URL can't
+    # surface on this one.
+    _sessions.reset_image(session_id)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -319,7 +345,13 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if not clean:
             continue
         full_parts.append(clean)
-        mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        try:
+            mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        except Exception as exc:
+            # A single sentence failing to synthesise (e.g. a transient ffmpeg
+            # error) must not abort the whole stream — skip it and keep going.
+            logger.error("[%s] TTS failed for sentence %r: %s", session_id, clean, exc)
+            continue
         yield mp3
 
     t.join()
@@ -329,7 +361,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         _sessions.set_latest_reply(session_id, full_reply)
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
-        asyncio.create_task(_fetch_and_store_image(session_id, image_term))
+        _spawn_image_fetch(session_id, image_term)
     else:
         # Model didn't emit [IMAGE: ...] — check if the user explicitly asked
         # for a picture and trigger a fallback search from their message.
@@ -337,7 +369,22 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if fallback:
             logger.info("[%s] Model omitted image tag — fallback search for: %r",
                         session_id, fallback)
-            asyncio.create_task(_fetch_and_store_image(session_id, fallback))
+            _spawn_image_fetch(session_id, fallback)
+
+
+# Strong references to in-flight background tasks. asyncio keeps only weak
+# references to tasks created with create_task(), so without this set a fetch
+# could be garbage-collected mid-execution.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_image_fetch(session_id: str, term: str) -> None:
+    """Start a background image fetch, marking the session image as pending and
+    retaining a strong reference to the task until it completes."""
+    _sessions.set_image_pending(session_id, True)
+    task = asyncio.create_task(_fetch_and_store_image(session_id, term))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
@@ -362,12 +409,21 @@ async def _fetch_and_store_image(session_id: str, term: str) -> None:
             logger.warning("[%s] Image search returned no results for %r (all variants exhausted)", session_id, term)
     except Exception as exc:
         logger.error("[%s] Background image fetch failed for %r: %s", session_id, term, exc)
+    finally:
+        # Always clear pending so the Pi's poll loop stops waiting.
+        _sessions.set_image_pending(session_id, False)
 
 
 @app.get("/session/{session_id}/latest_image")
 async def get_latest_image(session_id: str):
-    """One-shot: returns and clears the latest image URL for a session."""
-    return {"image_url": _sessions.get_and_clear_latest_image(session_id)}
+    """One-shot: returns and clears the latest image URL for a session.
+
+    `pending` is True when a background image fetch is still running and no URL
+    is ready yet, so the client knows to poll again rather than give up.
+    """
+    url = _sessions.get_and_clear_latest_image(session_id)
+    pending = bool(not url and _sessions.is_image_pending(session_id))
+    return {"image_url": url, "pending": pending}
 
 
 @app.get("/session/{session_id}/latest_reply")

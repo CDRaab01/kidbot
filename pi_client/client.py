@@ -93,8 +93,12 @@ class ServerClient:
         logger.error("Server returned %d: %s", resp.status_code, resp.text)
         return self.error_audio
 
-    def get_latest_image(self) -> str | None:
-        """Poll the server for an image URL generated during the last exchange."""
+    def get_latest_image(self) -> tuple[str | None, bool]:
+        """Poll the server for an image URL generated during the last exchange.
+
+        Returns (image_url_or_None, pending). `pending` is True when the server
+        is still fetching an image, so the caller should poll again.
+        """
         try:
             resp = requests.get(
                 f"{SERVER_URL}/session/{self.session_id}/latest_image",
@@ -102,10 +106,21 @@ class ServerClient:
                 timeout=5,
             )
             if resp.status_code == 200:
-                return resp.json().get("image_url") or None
+                data = resp.json()
+                return (data.get("image_url") or None, bool(data.get("pending")))
         except requests.RequestException as exc:
             logger.warning("Could not fetch latest image: %s", exc)
-        return None
+        return None, False
+
+    @staticmethod
+    def _iter_and_close(resp):
+        """Yield chunks then always release the connection, even if the consumer
+        stops early (e.g. playback is interrupted)."""
+        try:
+            for chunk in resp.iter_content(chunk_size=4096):
+                yield chunk
+        finally:
+            resp.close()
 
     def send_audio_stream(self, wav_path: str):
         """
@@ -124,8 +139,9 @@ class ServerClient:
                 stream=True,
             )
             if resp.status_code == 200:
-                return resp.iter_content(chunk_size=4096)
+                return self._iter_and_close(resp)
             logger.error("Stream endpoint returned %d", resp.status_code)
+            resp.close()
             return None
         except requests.RequestException as exc:
             logger.error("Stream connection error: %s", exc)

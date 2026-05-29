@@ -18,6 +18,7 @@ class Session:
     latest_image_url: str = ""
     latest_reply: str = ""
     shown_image_urls: list = field(default_factory=list)  # dedup across session, not persisted
+    image_pending: bool = False  # True while a background image fetch is in flight
 
 
 class SessionStore:
@@ -127,6 +128,22 @@ class SessionStore:
             return ""
         url, s.latest_image_url = s.latest_image_url, ""
         return url
+
+    def set_image_pending(self, session_id: str, pending: bool) -> None:
+        s = self._sessions.get(session_id)
+        if s:
+            s.image_pending = pending
+
+    def is_image_pending(self, session_id: str) -> bool:
+        s = self._sessions.get(session_id)
+        return bool(s and s.image_pending)
+
+    def reset_image(self, session_id: str) -> None:
+        """Drop any image left unpolled from a previous turn (start of a turn)."""
+        s = self._sessions.get(session_id)
+        if s:
+            s.latest_image_url = ""
+            s.image_pending = False
 
     def set_latest_reply(self, session_id: str, text: str) -> None:
         s = self._sessions.get(session_id)

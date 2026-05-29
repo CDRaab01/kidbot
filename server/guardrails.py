@@ -94,41 +94,45 @@ def get_system_prompt() -> str:
     """Return the system prompt with current time context injected."""
     return f"{_time_context()}\n\n{_BASE_PROMPT}"
 
+# The LLM system prompt is the PRIMARY child-safety guard. These keyword sets
+# are a coarse backstop for egregious terms only. They deliberately exclude
+# common words that collide with KidBot's own favourite topics — e.g. the
+# Jurassic "period", a "blood" moon, animals that "died" out, "smoke" from a
+# volcano, the "naked eye" — because blocking those redirects innocent science
+# questions to "ask your parents" and silently replaces correct answers. Match
+# is whole-word and case-insensitive (see _INPUT_PATTERN / _OUTPUT_PATTERN).
+
 # --- Input filter ---
 # Topics blocked before the prompt even reaches the LLM
 BLOCKED_INPUT_KEYWORDS = {
-    # Violence
-    "kill", "murder", "dead", "death", "die", "suicide", "blood", "gore",
-    "gun", "knife", "weapon", "bomb", "explosive", "shoot", "stab", "hurt",
+    # Violence (clear weapon / intent terms only)
+    "kill", "murder", "suicide", "gun", "knife", "weapon", "bomb", "stab",
     # Sexual / body
-    "sex", "sexy", "sexual", "naked", "nude", "nudity", "porn", "pornography",
+    "sex", "sexy", "sexual", "nude", "nudity", "porn", "pornography",
     "boob", "boobs", "breast", "breasts", "penis", "vagina", "vulva",
-    "genitals", "privates", "butt", "bum", "bottom", "underwear",
-    "condom", "pregnancy", "pregnant", "period", "puberty",
+    "genitals", "condom", "pregnant", "pregnancy", "puberty",
     # Drugs / alcohol
-    "drug", "drugs", "weed", "cannabis", "cocaine", "heroin", "meth",
-    "alcohol", "beer", "wine", "vodka", "drunk", "smoke", "smoking", "vape",
+    "drug", "drugs", "cannabis", "cocaine", "heroin", "meth",
+    "alcohol", "wine", "vodka", "vape", "smoking",
     # Hate
-    "racist", "racism", "hate", "slur", "swear", "curse",
-    # Personal info
-    "address", "phone", "password", "credit card", "social security",
+    "racist", "racism", "slur",
+    # Personal info (a child volunteering "address"/"phone" is not unsafe — the
+    # real risk is the BOT soliciting it, covered by _PERSONAL_INFO_PATTERNS)
+    "password", "credit card", "social security",
 }
 
 # --- Output filter ---
-# Hard keywords that must never appear in KidBot's reply
+# Hard keywords that must never appear in KidBot's reply (stricter subset)
 BLOCKED_OUTPUT_KEYWORDS = {
     # Violence
-    "kill", "murder", "suicide", "blood", "gore", "dead", "death",
-    "gun", "knife", "weapon", "bomb", "explosive", "shoot", "stab",
+    "kill", "murder", "suicide", "gun", "knife", "weapon", "bomb", "stab",
     # Sexual / body
     "sex", "sexy", "sexual", "nude", "porn", "pornography",
-    "boob", "boobs", "penis", "vagina", "vulva",
-    "genitals", "condom",
+    "boob", "boobs", "penis", "vagina", "vulva", "genitals", "condom",
     # Drugs / alcohol
-    "drug", "drugs", "weed", "cocaine", "heroin", "meth",
-    "alcohol", "vodka", "drunk",
+    "drug", "drugs", "cocaine", "heroin", "meth", "alcohol", "vodka",
     # Hate
-    "racist", "racism", "hate",
+    "racist", "racism",
 }
 
 # Patterns that suggest the LLM is asking for personal info

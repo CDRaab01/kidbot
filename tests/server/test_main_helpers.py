@@ -179,6 +179,133 @@ class TestInputLengthLimits:
 
 
 # ---------------------------------------------------------------------------
+# _run_llm_pipeline() image fallback (non-streaming path)
+# ---------------------------------------------------------------------------
+
+class TestRunLlmPipelineImageFallback:
+    def test_explicit_picture_request_fetches_image_without_tag(self):
+        """When the LLM reply has no [IMAGE:] tag but the child asked for a
+        picture, the non-streaming pipeline falls back to the user's message."""
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url", return_value="http://img/x.jpg") as fetch:
+            llm.respond.return_value = "Sure! Spider-Man is amazing."  # no tag
+            sessions.get_history.return_value = []
+            sessions.get_shown_image_urls.return_value = []
+            reply, url = main._run_llm_pipeline(
+                "show me a picture of Spider-Man", "s1")
+        assert url == "http://img/x.jpg"
+        assert fetch.call_args[0][0] == "Spider-Man"
+
+    def test_no_picture_request_no_fallback_fetch(self):
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url") as fetch:
+            llm.respond.return_value = "Dinosaurs were huge reptiles."  # no tag
+            sessions.get_history.return_value = []
+            reply, url = main._run_llm_pipeline("tell me about dinosaurs", "s1")
+        assert url == ""
+        fetch.assert_not_called()
+
+    def test_explicit_tag_takes_priority_over_fallback(self):
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url", return_value="http://img/y.jpg") as fetch:
+            llm.respond.return_value = "Here you go. [IMAGE: tiger photo]"
+            sessions.get_history.return_value = []
+            sessions.get_shown_image_urls.return_value = []
+            main._run_llm_pipeline("show me a picture of a lion", "s1")
+        assert fetch.call_args[0][0] == "tiger photo"
+
+
+# ---------------------------------------------------------------------------
+# Startup auth warning
+# ---------------------------------------------------------------------------
+
+class TestAuthWarning:
+    def test_warns_when_no_api_key(self):
+        import server.main as main
+        with patch.object(main, "API_KEY", ""), \
+             patch.object(main.logger, "warning") as mock_warn:
+            main._warn_if_auth_disabled()
+        mock_warn.assert_called_once()
+
+    def test_silent_when_api_key_set(self):
+        import server.main as main
+        with patch.object(main, "API_KEY", "secret"), \
+             patch.object(main.logger, "warning") as mock_warn:
+            main._warn_if_auth_disabled()
+        mock_warn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Non-streaming endpoints offload blocking work to the threadpool
+# ---------------------------------------------------------------------------
+
+class TestNonStreamingOffload:
+    def _spy_threadpool(self, calls):
+        import server.main as main
+        real = main.run_in_threadpool
+
+        async def spy(func, *a, **k):
+            calls.append(getattr(func, "__name__", str(func)))
+            return await real(func, *a, **k)
+
+        return patch.object(main, "run_in_threadpool", spy)
+
+    def test_chat_text_offloads_pipeline_and_tts(self):
+        import server.main as main
+        calls = []
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText"), \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             self._spy_threadpool(calls):
+            llm = MagicMock()
+            llm.respond.return_value = "Dinosaurs are great!"
+            MockLLM.return_value = llm
+            tts = MagicMock()
+            tts.synthesize.return_value = b"mp3"
+            MockTTS.return_value = tts
+            with TestClient(app) as client:
+                resp = client.post("/chat_text", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 200
+        # Both the LLM pipeline and the TTS response build were offloaded.
+        assert "_run_llm_pipeline" in calls
+        assert "_mp3_response" in calls
+
+    def test_chat_offloads_transcription(self):
+        calls = []
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             self._spy_threadpool(calls):
+            stt = MagicMock()
+            stt.transcribe.return_value = "hello"
+            stt.transcribe.__name__ = "transcribe"  # so the spy can record it
+            MockSTT.return_value = stt
+            llm = MagicMock()
+            llm.respond.return_value = "Hi!"
+            MockLLM.return_value = llm
+            tts = MagicMock()
+            tts.synthesize.return_value = b"mp3"
+            MockTTS.return_value = tts
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/chat",
+                    files={"audio": ("a.wav", b"RIFFdata", "audio/wav")},
+                    data={"session_id": "s1"},
+                )
+        assert resp.status_code == 200
+        assert "transcribe" in calls
+        assert "_run_llm_pipeline" in calls
+
+
+# ---------------------------------------------------------------------------
 # _sentence_stream() error branch
 # ---------------------------------------------------------------------------
 
@@ -207,6 +334,32 @@ class TestSentenceStreamErrorBranch:
 
         assert resp.status_code == 200
         mock_sessions.add_exchange.assert_not_called()
+
+    def test_one_sentence_tts_failure_does_not_abort_stream(self):
+        """A single TTS failure mid-stream is skipped; later sentences still play."""
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             patch("server.main._sessions"):
+
+            MockSTT.return_value = MagicMock()
+            llm = MagicMock()
+            llm.respond_stream.return_value = iter(
+                ["First sentence here.", "Second sentence here."])
+            MockLLM.return_value = llm
+
+            tts = MagicMock()
+            # First sentence raises, second succeeds.
+            tts.synthesize.side_effect = [RuntimeError("ffmpeg boom"), b"mp3two"]
+            MockTTS.return_value = tts
+
+            with TestClient(app) as client:
+                resp = client.post("/chat_text_stream",
+                                   data={"text": "hi", "session_id": "s1"})
+
+        assert resp.status_code == 200
+        assert resp.content == b"mp3two"  # only the surviving sentence
 
     def test_llm_exception_stream_returns_empty_body(self):
         """Stream body should be empty (no sentences synthesised) on error."""

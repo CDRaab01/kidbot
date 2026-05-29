@@ -388,6 +388,13 @@ class DisplayManager:
     def _animate(self) -> None:
         frame = 0
         while self._running:
+            # Headless (display not wired): there is nothing to draw, so skip
+            # the per-frame PIL render entirely instead of building and
+            # discarding a 320x240 image every tick.
+            if self._device is None:
+                time.sleep(self._frame_sleep)
+                continue
+
             now = time.time()
             with self._lock:
                 state = self._state

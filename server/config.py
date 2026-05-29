@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
 
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 8765
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8765"))
 
 # Faster-Whisper STT
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")  # tiny/base/small/medium
@@ -17,8 +17,14 @@ LLM_MAX_TOKENS     = 700
 # Keeps the prompt from growing unbounded and crowding out the response budget.
 LLM_MAX_HISTORY_EXCHANGES = int(os.getenv("LLM_MAX_HISTORY", "8"))
 LLM_TEMPERATURE    = 0.7
+# Request timeout (seconds) for LM Studio calls. Without it the OpenAI SDK
+# default (~10 min) lets a hung LM Studio stall a request — or the streaming
+# producer thread — for minutes. For streaming this bounds the gap between
+# tokens; for non-streaming it bounds the whole response.
+LLM_TIMEOUT        = float(os.getenv("LLM_TIMEOUT", "120"))
 
-# Child's name — set CHILD_NAME in .env (required; no default so it must be configured)
+# Child's name — set CHILD_NAME in .env to personalise the bot.
+# Falls back to "Kid" (so BOT_NAME = "KidBot") when unset.
 CHILD = os.getenv("CHILD_NAME", "Kid")
 BOT_NAME = f"{CHILD}Bot"
 
@@ -35,9 +41,13 @@ except ValueError:
 TEMP_DIR = Path("server/temp")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Session persistence (optional SQLite backend)
+# Session persistence (optional SQLite backend).
+# Default lives inside server/sessions/ so it matches the Docker volume mount
+# (docker-compose mounts ./server/sessions) and the .gitignore entry — the old
+# server/sessions.db sat at the repo root, so it neither persisted across
+# container rebuilds nor was ignored by git.
 PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").lower() in ("1", "true", "yes")
-SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions.db")
+SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions/sessions.db")
 
 # API key authentication — set on both server and Pi; empty = disabled (dev mode)
 API_KEY = os.getenv("KIDBOT_API_KEY", "")

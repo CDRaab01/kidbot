@@ -3,7 +3,8 @@ import re
 from typing import Iterator
 
 from openai import OpenAI
-from .config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS, LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE
+from .config import (LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS,
+                     LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE, LLM_TIMEOUT)
 from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, get_system_prompt,
                          is_input_safe, is_output_safe)
 
@@ -31,10 +32,13 @@ _REASONING_RE = re.compile(
     r'looking at (this|the)|given that\b|in this case\b|'
     # "This is another greeting / similar / a repeat..."
     r'this is (another|a (greeting|repeat|continuation|follow.?up)|similar|the same)\b|'
-    # "Since they/the user/the child haven't..."
-    r'since (they|the (user|child|kid)|he|she|we)\b|'
-    # meta-observation about what the user said / is asking
-    r'they (are|have|seem|want|need|said|asked|haven\'t|haven.t)\b|'
+    # "Since the user/the child haven't..." (kept narrow: bare "since they/he/
+    # she/we" also opens legitimate answers like "Since they live underwater…")
+    r'since the (user|child|kid)\b|'
+    # meta-observation about what the user said / is asking. Bare "they are/
+    # have/seem" was dropping real answer openings ("They are huge reptiles."),
+    # so only the clearly-meta forms remain.
+    r'they (want|need|asked|said|haven\'t|haven.t|are (asking|wondering|trying|looking|probably|likely)|seem to)\b|'
     # "Based on..." / situational reasoning openers
     r'based on\b|in this situation\b|'
     # structured thinking headers (e.g. "Thinking Process:", "Thinking:")
@@ -79,7 +83,7 @@ def _strip_reasoning(text: str) -> str:
 
 class LLMInterface:
     def __init__(self):
-        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
+        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio", timeout=LLM_TIMEOUT)
         try:
             models = [m.id for m in self.client.models.list().data]
             if not any(LM_STUDIO_MODEL in m for m in models):

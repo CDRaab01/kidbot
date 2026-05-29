@@ -90,6 +90,15 @@ class TestLLMInterface:
             llm.respond("Hello again")
         assert mock_gsp.call_count == 2
 
+    def test_client_constructed_with_timeout(self):
+        from server.config import LLM_TIMEOUT
+        with patch("server.llm.OpenAI") as MockOpenAI:
+            MockOpenAI.return_value.models.list.return_value = MagicMock(
+                data=[SimpleNamespace(id="google/gemma-4-e4b")]
+            )
+            LLMInterface()
+        assert MockOpenAI.call_args.kwargs["timeout"] == LLM_TIMEOUT
+
     def test_model_not_found_logs_warning(self, mock_openai):
         mock_openai.models.list.return_value = MagicMock(
             data=[SimpleNamespace(id="some-other-model")]
@@ -220,3 +229,18 @@ class TestStripReasoning:
         result = _strip_reasoning(text)
         assert "Elephants" in result
         assert "My response" not in result
+
+    def test_answer_opening_with_they_are_not_stripped(self):
+        # Regression: "They are/have/seem" open real answers and must survive.
+        for text in (
+            "They are enormous reptiles that lived long ago.",
+            "They have powerful legs for jumping.",
+            "They seem scary but most were gentle plant-eaters.",
+            "Since they live underwater, fish breathe through gills.",
+        ):
+            assert _strip_reasoning(text) == text
+
+    def test_meta_they_forms_still_stripped(self):
+        text = "They are asking about dinosaurs. Dinosaurs are amazing reptiles!"
+        result = _strip_reasoning(text)
+        assert result == "Dinosaurs are amazing reptiles!"
