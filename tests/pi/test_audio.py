@@ -96,9 +96,42 @@ class TestVolumeBlip:
              patch("subprocess.Popen", return_value=proc) as mock_popen, \
              patch("os.unlink") as mock_unlink:
             am.play_volume_blip(50)
-        # paplay was invoked
+        # paplay was invoked with a timeout
         assert mock_popen.call_args[0][0][0] == "paplay"
+        assert proc.communicate.call_args.kwargs.get("timeout") == 5
         # temp wav cleaned up
         mock_unlink.assert_called_once()
         # PCM level re-asserted via amixer
         assert any(c[0][0][0] == "amixer" for c in mock_run.call_args_list)
+
+    def test_blip_timeout_kills_paplay_without_raising(self):
+        import subprocess
+        audio = _import_audio()
+        am = _make_manager(audio)
+        proc = MagicMock()
+        proc.communicate.side_effect = subprocess.TimeoutExpired("paplay", 5)
+        with patch("subprocess.run"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("os.unlink"):
+            am.play_volume_blip(50)  # must not raise
+        proc.kill.assert_called_once()
+
+
+class TestChime:
+    def test_chime_uses_timeout(self):
+        audio = _import_audio()
+        am = _make_manager(audio)
+        with patch("os.path.exists", return_value=True), \
+             patch.object(am, "_chime_volume"), \
+             patch("subprocess.run") as mock_run:
+            am.play_startup_sound()
+        assert mock_run.call_args.kwargs.get("timeout") == 10
+
+    def test_chime_timeout_is_swallowed(self):
+        import subprocess
+        audio = _import_audio()
+        am = _make_manager(audio)
+        with patch("os.path.exists", return_value=True), \
+             patch.object(am, "_chime_volume"), \
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired("aplay", 10)):
+            am.play_shutdown_sound()  # must not raise
