@@ -292,6 +292,9 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
     thread pool as it arrives, so playback begins before the LLM finishes.
     """
     history = _sessions.get_history(session_id)
+    # Discard any image left unpolled from a previous turn so a stale URL can't
+    # surface on this one.
+    _sessions.reset_image(session_id)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -333,7 +336,7 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         _sessions.set_latest_reply(session_id, full_reply)
     if image_term:
         logger.info("[%s] Fetching stream image for: %r", session_id, image_term)
-        asyncio.create_task(_fetch_and_store_image(session_id, image_term))
+        _spawn_image_fetch(session_id, image_term)
     else:
         # Model didn't emit [IMAGE: ...] — check if the user explicitly asked
         # for a picture and trigger a fallback search from their message.
@@ -341,7 +344,22 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if fallback:
             logger.info("[%s] Model omitted image tag — fallback search for: %r",
                         session_id, fallback)
-            asyncio.create_task(_fetch_and_store_image(session_id, fallback))
+            _spawn_image_fetch(session_id, fallback)
+
+
+# Strong references to in-flight background tasks. asyncio keeps only weak
+# references to tasks created with create_task(), so without this set a fetch
+# could be garbage-collected mid-execution.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_image_fetch(session_id: str, term: str) -> None:
+    """Start a background image fetch, marking the session image as pending and
+    retaining a strong reference to the task until it completes."""
+    _sessions.set_image_pending(session_id, True)
+    task = asyncio.create_task(_fetch_and_store_image(session_id, term))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _fetch_and_store_image(session_id: str, term: str) -> None:
@@ -366,12 +384,21 @@ async def _fetch_and_store_image(session_id: str, term: str) -> None:
             logger.warning("[%s] Image search returned no results for %r (all variants exhausted)", session_id, term)
     except Exception as exc:
         logger.error("[%s] Background image fetch failed for %r: %s", session_id, term, exc)
+    finally:
+        # Always clear pending so the Pi's poll loop stops waiting.
+        _sessions.set_image_pending(session_id, False)
 
 
 @app.get("/session/{session_id}/latest_image")
 async def get_latest_image(session_id: str):
-    """One-shot: returns and clears the latest image URL for a session."""
-    return {"image_url": _sessions.get_and_clear_latest_image(session_id)}
+    """One-shot: returns and clears the latest image URL for a session.
+
+    `pending` is True when a background image fetch is still running and no URL
+    is ready yet, so the client knows to poll again rather than give up.
+    """
+    url = _sessions.get_and_clear_latest_image(session_id)
+    pending = bool(not url and _sessions.is_image_pending(session_id))
+    return {"image_url": url, "pending": pending}
 
 
 @app.get("/session/{session_id}/latest_reply")

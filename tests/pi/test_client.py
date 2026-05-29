@@ -77,24 +77,24 @@ class TestPostWithRetry:
 # ---------------------------------------------------------------------------
 
 class TestGetLatestImage:
-    def test_returns_url(self, client_mod):
+    def test_returns_url_and_pending(self, client_mod):
         c = client_mod.ServerClient()
         resp = MagicMock(status_code=200)
-        resp.json.return_value = {"image_url": "https://x/y.jpg"}
+        resp.json.return_value = {"image_url": "https://x/y.jpg", "pending": False}
         with patch("requests.get", return_value=resp):
-            assert c.get_latest_image() == "https://x/y.jpg"
+            assert c.get_latest_image() == ("https://x/y.jpg", False)
 
-    def test_empty_url_returns_none(self, client_mod):
+    def test_empty_url_pending_true(self, client_mod):
         c = client_mod.ServerClient()
         resp = MagicMock(status_code=200)
-        resp.json.return_value = {"image_url": ""}
+        resp.json.return_value = {"image_url": "", "pending": True}
         with patch("requests.get", return_value=resp):
-            assert c.get_latest_image() is None
+            assert c.get_latest_image() == (None, True)
 
-    def test_request_exception_returns_none(self, client_mod):
+    def test_request_exception_returns_none_not_pending(self, client_mod):
         c = client_mod.ServerClient()
         with patch("requests.get", side_effect=requests.RequestException):
-            assert c.get_latest_image() is None
+            assert c.get_latest_image() == (None, False)
 
 
 # ---------------------------------------------------------------------------

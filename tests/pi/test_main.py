@@ -52,7 +52,7 @@ class TestBusyLock:
     def test_normal_press_release_cycle_releases_lock(self, main_mod):
         main_mod.audio.stop_recording.return_value = "/tmp/x.wav"
         main_mod.client.send_audio_stream.return_value = iter([b"mp3"])
-        main_mod.client.get_latest_image.return_value = None
+        main_mod.client.get_latest_image.return_value = (None, False)
         main_mod.on_press()
         with patch("os.unlink"), patch("time.sleep"):
             main_mod.on_release()
@@ -62,7 +62,7 @@ class TestBusyLock:
         """A missing temp file must not wedge the button (the original bug)."""
         main_mod.audio.stop_recording.return_value = "/tmp/gone.wav"
         main_mod.client.send_audio_stream.return_value = iter([b"mp3"])
-        main_mod.client.get_latest_image.return_value = None
+        main_mod.client.get_latest_image.return_value = (None, False)
         main_mod.on_press()
         with patch("os.unlink", side_effect=FileNotFoundError), patch("time.sleep"):
             main_mod.on_release()  # must not raise
@@ -74,3 +74,33 @@ class TestBusyLock:
         main_mod.on_release()
         assert not main_mod._busy_lock.locked()
         main_mod.client.send_audio_stream.assert_not_called()
+
+
+class TestPollForImage:
+    def test_returns_url_on_first_poll(self, main_mod):
+        main_mod.client.get_latest_image.return_value = ("http://img/x.jpg", False)
+        assert main_mod._poll_for_image() == "http://img/x.jpg"
+        assert main_mod.client.get_latest_image.call_count == 1
+
+    def test_no_image_no_pending_returns_immediately(self, main_mod):
+        # Normal (no-image) turn: first poll says not pending → no delay.
+        main_mod.client.get_latest_image.return_value = (None, False)
+        with patch("time.sleep") as sleep:
+            assert main_mod._poll_for_image() is None
+        sleep.assert_not_called()
+        assert main_mod.client.get_latest_image.call_count == 1
+
+    def test_waits_while_pending_then_returns_url(self, main_mod):
+        # Pending for two polls, then the URL arrives.
+        main_mod.client.get_latest_image.side_effect = [
+            (None, True), (None, True), ("http://img/late.jpg", False),
+        ]
+        with patch("time.sleep"):
+            assert main_mod._poll_for_image() == "http://img/late.jpg"
+        assert main_mod.client.get_latest_image.call_count == 3
+
+    def test_gives_up_after_budget(self, main_mod):
+        main_mod.client.get_latest_image.return_value = (None, True)  # never resolves
+        with patch("time.sleep"):
+            assert main_mod._poll_for_image() is None
+        assert main_mod.client.get_latest_image.call_count == main_mod._IMAGE_POLL_ATTEMPTS

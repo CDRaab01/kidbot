@@ -176,6 +176,26 @@ class TestLatestImage:
     def test_get_shown_image_urls_returns_empty_for_unknown_session(self):
         assert self.store.get_shown_image_urls("nobody") == []
 
+    def test_image_pending_defaults_false(self):
+        self.store.get_history("s1")
+        assert self.store.is_image_pending("s1") is False
+
+    def test_set_and_read_image_pending(self):
+        self.store.get_history("s1")
+        self.store.set_image_pending("s1", True)
+        assert self.store.is_image_pending("s1") is True
+
+    def test_is_image_pending_unknown_session_false(self):
+        assert self.store.is_image_pending("nobody") is False
+
+    def test_reset_image_clears_url_and_pending(self):
+        self.store.get_history("s1")
+        self.store.set_latest_image("s1", "https://example.com/a.jpg")
+        self.store.set_image_pending("s1", True)
+        self.store.reset_image("s1")
+        assert self.store.get_and_clear_latest_image("s1") == ""
+        assert self.store.is_image_pending("s1") is False
+
     def test_get_shown_image_urls_returns_copy(self):
         self.store.get_history("s1")
         self.store.set_latest_image("s1", "https://example.com/a.jpg")

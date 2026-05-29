@@ -48,6 +48,26 @@ volume_rocker = VolumeRocker(on_change=_on_volume_change)
 
 _busy_lock = threading.Lock()  # prevents overlapping sessions
 
+# Image-poll budget: the server fetches images in the background and may still
+# be working when a short reply finishes playing.
+_IMAGE_POLL_ATTEMPTS = 12
+_IMAGE_POLL_INTERVAL = 0.5  # seconds
+
+
+def _poll_for_image():
+    """Poll latest_image until a URL arrives or the fetch is no longer pending.
+
+    Returns the image URL, or None if no image was produced.
+    """
+    for _ in range(_IMAGE_POLL_ATTEMPTS):
+        url, pending = client.get_latest_image()
+        if url:
+            return url
+        if not pending:
+            return None
+        time.sleep(_IMAGE_POLL_INTERVAL)
+    return None
+
 
 def on_press():
     if not _busy_lock.acquire(blocking=False):
@@ -90,8 +110,11 @@ def on_release():
             display.set_state("SPEAKING")
             audio.play_mp3_stream(chunk_iter)
             button.led(False)
-            # Check if the LLM requested an image
-            image_url = client.get_latest_image()
+            # The image is fetched server-side as a background task that can lag
+            # behind a short reply's playback. Poll until it arrives or the
+            # server reports the fetch is no longer pending. Non-image turns
+            # return pending=False on the first poll, so there's no added delay.
+            image_url = _poll_for_image()
             if image_url:
                 logger.info("Showing image: %s", image_url)
                 display.show_image_url(image_url)

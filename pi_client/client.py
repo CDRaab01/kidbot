@@ -93,8 +93,12 @@ class ServerClient:
         logger.error("Server returned %d: %s", resp.status_code, resp.text)
         return self.error_audio
 
-    def get_latest_image(self) -> str | None:
-        """Poll the server for an image URL generated during the last exchange."""
+    def get_latest_image(self) -> tuple[str | None, bool]:
+        """Poll the server for an image URL generated during the last exchange.
+
+        Returns (image_url_or_None, pending). `pending` is True when the server
+        is still fetching an image, so the caller should poll again.
+        """
         try:
             resp = requests.get(
                 f"{SERVER_URL}/session/{self.session_id}/latest_image",
@@ -102,10 +106,11 @@ class ServerClient:
                 timeout=5,
             )
             if resp.status_code == 200:
-                return resp.json().get("image_url") or None
+                data = resp.json()
+                return (data.get("image_url") or None, bool(data.get("pending")))
         except requests.RequestException as exc:
             logger.warning("Could not fetch latest image: %s", exc)
-        return None
+        return None, False
 
     def send_audio_stream(self, wav_path: str):
         """
