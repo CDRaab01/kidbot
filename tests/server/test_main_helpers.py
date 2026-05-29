@@ -222,6 +222,26 @@ class TestRunLlmPipelineImageFallback:
 
 
 # ---------------------------------------------------------------------------
+# Startup auth warning
+# ---------------------------------------------------------------------------
+
+class TestAuthWarning:
+    def test_warns_when_no_api_key(self):
+        import server.main as main
+        with patch.object(main, "API_KEY", ""), \
+             patch.object(main.logger, "warning") as mock_warn:
+            main._warn_if_auth_disabled()
+        mock_warn.assert_called_once()
+
+    def test_silent_when_api_key_set(self):
+        import server.main as main
+        with patch.object(main, "API_KEY", "secret"), \
+             patch.object(main.logger, "warning") as mock_warn:
+            main._warn_if_auth_disabled()
+        mock_warn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Non-streaming endpoints offload blocking work to the threadpool
 # ---------------------------------------------------------------------------
 

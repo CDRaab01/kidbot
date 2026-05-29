@@ -53,9 +53,21 @@ SORRY_TRY_AGAIN  = "Hmm, I didn't quite catch that! Could you try saying it agai
 SORRY_CANT_THINK = "Oops, I got a bit muddled! Give me a moment and try again."
 
 
+def _warn_if_auth_disabled() -> None:
+    if not API_KEY:
+        logger.warning(
+            "No API key configured (KIDBOT_API_KEY is empty) — every endpoint "
+            "except /health is unauthenticated. Keep the server on a trusted LAN "
+            "and do not expose port %s to the internet. Set KIDBOT_API_KEY (and "
+            "the matching key on the Pi) to require an X-API-Key header.",
+            SERVER_PORT,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _stt, _llm, _tts
+    _warn_if_auth_disabled()
     logger.info("Loading models - this may take a moment...")
     _stt = SpeechToText()
     _llm = LLMInterface()
