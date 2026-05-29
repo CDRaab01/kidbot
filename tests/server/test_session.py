@@ -269,10 +269,12 @@ class TestLoadFromDbCorruption:
         store1 = SessionStore(db_path=db)
         store1.add_exchange("good-session", "hello", "hi there")
 
-        # Inject a corrupt row directly
+        # Inject a corrupt row directly. Name columns explicitly so the insert
+        # is robust to the schema (the store already created the table with the
+        # extra facts column).
         with sqlite3.connect(db) as conn:
             conn.execute(
-                "INSERT INTO sessions VALUES (?, ?, ?)",
+                "INSERT INTO sessions (session_id, messages, last_active) VALUES (?, ?, ?)",
                 ("bad-session", "}{invalid", time.time()),
             )
 
