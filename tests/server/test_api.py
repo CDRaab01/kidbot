@@ -303,10 +303,15 @@ class TestAPIKeyAuth:
 
 @contextmanager
 def _loaded_stream_client(sentences=None, tts_bytes=b"fakemp3"):
-    """Like _loaded_client but configures llm.respond_stream with sentence chunks."""
+    """Like _loaded_client but configures llm.respond_stream with sentence chunks.
+
+    _spawn_image_fetch is stubbed so an [IMAGE: ...] tag in a streamed reply
+    doesn't kick off a real background image search (which would make a live
+    network call during the test suite)."""
     with patch("server.main.SpeechToText") as MockSTT, \
          patch("server.main.LLMInterface") as MockLLM, \
-         patch("server.main.TextToSpeech") as MockTTS:
+         patch("server.main.TextToSpeech") as MockTTS, \
+         patch("server.main._spawn_image_fetch"):
         stt = MagicMock()
         stt.transcribe.return_value = "hello world"
         MockSTT.return_value = stt
