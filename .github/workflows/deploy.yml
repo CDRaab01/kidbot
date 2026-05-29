@@ -83,11 +83,11 @@ jobs:
   # ── Smoke Test (after deploy) ──────────────────────────────────────────────
 
   smoke-test:
-    name: Image Smoke Test
+    name: Post-deploy Smoke
     needs: deploy
     runs-on: ubuntu-latest
     steps:
-      - name: Run image relevance smoke test
+      - name: Image relevance smoke test
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -99,3 +99,20 @@ jobs:
             cd kidbot
             docker compose exec -T kidbot python scripts/wait_for_server.py
             docker compose exec -T kidbot python scripts/test_images.py --no-vision
+
+      - name: Conversation behavioural smoke test (advisory)
+        # Drives real multi-turn /chat_text conversations against the live
+        # LLM and uses an LLM judge to grade on-topic flow and fact recall —
+        # the prompt-level behaviour unit tests can't verify. Advisory by
+        # default (exit 0 on probe failures) so LLM stochasticity doesn't flap
+        # the deploy gate. Drop --strict in to fail the build on a NO verdict.
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            cd kidbot
+            docker compose exec -T kidbot python scripts/test_conversation.py
