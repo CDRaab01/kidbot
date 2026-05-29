@@ -102,7 +102,7 @@ class TestGetLatestImage:
 # ---------------------------------------------------------------------------
 
 class TestSendAudioStream:
-    def test_returns_iterator_on_200(self, client_mod, tmp_path):
+    def test_returns_iterator_on_200_and_closes_when_consumed(self, client_mod, tmp_path):
         wav = tmp_path / "a.wav"
         wav.write_bytes(b"RIFFdata")
         c = client_mod.ServerClient()
@@ -111,15 +111,29 @@ class TestSendAudioStream:
         with patch("requests.post", return_value=resp):
             out = c.send_audio_stream(str(wav))
         assert out is not None
-        assert list(out) == [b"chunk"]
+        assert list(out) == [b"chunk"]  # fully consuming runs the finally
+        resp.close.assert_called_once()
 
-    def test_non_200_returns_none(self, client_mod, tmp_path):
+    def test_iterator_closes_response_on_early_stop(self, client_mod, tmp_path):
+        wav = tmp_path / "a.wav"
+        wav.write_bytes(b"RIFFdata")
+        c = client_mod.ServerClient()
+        resp = MagicMock(status_code=200)
+        resp.iter_content.return_value = iter([b"a", b"b", b"c"])
+        with patch("requests.post", return_value=resp):
+            out = c.send_audio_stream(str(wav))
+        next(out)        # consume one chunk
+        out.close()      # consumer interrupted (e.g. playback killed)
+        resp.close.assert_called_once()
+
+    def test_non_200_returns_none_and_closes(self, client_mod, tmp_path):
         wav = tmp_path / "a.wav"
         wav.write_bytes(b"RIFFdata")
         c = client_mod.ServerClient()
         resp = MagicMock(status_code=500)
         with patch("requests.post", return_value=resp):
             assert c.send_audio_stream(str(wav)) is None
+        resp.close.assert_called_once()
 
     def test_connection_error_returns_none(self, client_mod, tmp_path):
         wav = tmp_path / "a.wav"

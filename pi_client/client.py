@@ -112,6 +112,16 @@ class ServerClient:
             logger.warning("Could not fetch latest image: %s", exc)
         return None, False
 
+    @staticmethod
+    def _iter_and_close(resp):
+        """Yield chunks then always release the connection, even if the consumer
+        stops early (e.g. playback is interrupted)."""
+        try:
+            for chunk in resp.iter_content(chunk_size=4096):
+                yield chunk
+        finally:
+            resp.close()
+
     def send_audio_stream(self, wav_path: str):
         """
         Send WAV to /chat_stream. Returns a chunk iterator on success, or None on
@@ -129,8 +139,9 @@ class ServerClient:
                 stream=True,
             )
             if resp.status_code == 200:
-                return resp.iter_content(chunk_size=4096)
+                return self._iter_and_close(resp)
             logger.error("Stream endpoint returned %d", resp.status_code)
+            resp.close()
             return None
         except requests.RequestException as exc:
             logger.error("Stream connection error: %s", exc)
