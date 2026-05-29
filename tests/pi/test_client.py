@@ -147,6 +147,24 @@ class TestSendAudioStream:
 # ping
 # ---------------------------------------------------------------------------
 
+class TestSessionId:
+    def test_uses_hostname_for_stable_id(self, client_mod):
+        with patch("socket.gethostname", return_value="kidbot-pi"):
+            c = client_mod.ServerClient()
+        assert c.session_id == "kidbot-pi"
+
+    def test_stable_across_instances(self, client_mod):
+        with patch("socket.gethostname", return_value="kidbot-pi"):
+            a = client_mod.ServerClient()
+            b = client_mod.ServerClient()
+        assert a.session_id == b.session_id  # survives a restart
+
+    def test_falls_back_when_hostname_blank(self, client_mod):
+        with patch("socket.gethostname", return_value=""):
+            c = client_mod.ServerClient()
+        assert c.session_id.startswith("pi-")
+
+
 class TestPing:
     def test_ping_true_on_200(self, client_mod):
         c = client_mod.ServerClient()

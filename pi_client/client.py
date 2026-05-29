@@ -1,10 +1,22 @@
 import logging
+import socket
 import time
 import uuid
 
 import requests
 
 from .config import API_KEY, SERVER_URL
+
+
+def _stable_session_id() -> str:
+    """A session id that stays the same across reboots so the server can keep
+    remembering this device's conversation. Falls back to a random id only if
+    the hostname can't be read."""
+    try:
+        host = socket.gethostname().strip()
+    except Exception:
+        host = ""
+    return host or f"pi-{uuid.uuid4()}"
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +34,7 @@ _RETRY_DELAYS  = (1, 2)  # seconds between retry attempts
 
 class ServerClient:
     def __init__(self):
-        self.session_id = str(uuid.uuid4())
+        self.session_id = _stable_session_id()
         logger.info("Session ID: %s", self.session_id)
         self.offline_audio: bytes | None = None
         self.error_audio:   bytes | None = None

@@ -23,3 +23,20 @@ def test_server_defaults(monkeypatch):
     assert cfg.SERVER_HOST == "0.0.0.0"
     assert cfg.SERVER_PORT == 8765
     assert isinstance(cfg.SERVER_PORT, int)
+
+
+def test_session_timeout_default_remembers_across_the_day(monkeypatch):
+    monkeypatch.delenv("SESSION_TIMEOUT_HOURS", raising=False)
+    importlib.reload(cfg)
+    # Default must comfortably exceed a 30-minute gap (the old behaviour).
+    assert cfg.SESSION_TIMEOUT >= 24 * 3600
+
+
+def test_session_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("SESSION_TIMEOUT_HOURS", "2")
+    importlib.reload(cfg)
+    try:
+        assert cfg.SESSION_TIMEOUT == 2 * 3600
+    finally:
+        monkeypatch.undo()
+        importlib.reload(cfg)

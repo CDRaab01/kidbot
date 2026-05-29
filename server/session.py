@@ -5,10 +5,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import SESSION_TIMEOUT
+
 logger = logging.getLogger(__name__)
 
 MAX_TURNS = 10       # keep last 10 back-and-forths (20 messages)
-SESSION_TIMEOUT = 1800  # drop idle sessions after 30 minutes
 
 
 @dataclass
