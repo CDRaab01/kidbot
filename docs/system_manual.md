@@ -361,20 +361,43 @@ sudo raspi-config
 sudo reboot
 ```
 
-### 6.3 Install ReSpeaker Drivers
+### 6.3 Install Audio Driver (Pi Zero 2W)
+
+The Pi Zero 2W uses the **mainline** `snd_soc_tlv320aic3x` kernel driver with a custom device-tree overlay. The seeed-voicecard DKMS driver is **not used** — it fails to build against kernel 6.18+ due to API changes.
+
+The automated setup script handles everything:
 
 ```bash
-sudo apt install -y git python3-pip portaudio19-dev
-git clone https://github.com/HinTak/seeed-voicecard.git
-cd seeed-voicecard
-sudo ./install.sh
+cd /home/pi/kidbot/pi_setup
+sudo bash setup_2w.sh
 sudo reboot
 ```
 
-### 6.4 Install System Dependencies
+The script:
+- Compiles and installs a custom `aic3104-soundcard.dtbo` device-tree overlay
+- Enables the overlay and configures I2S clock forcing in `/boot/firmware/config.txt`
+- Sets MICBIAS to 2.5 V via the DTS property `ai3x-micbias-vg = <2>`
+- Sets initial PCM volume and saves ALSA state with `alsactl store 1`
+
+After reboot, verify the codec is loaded:
+```bash
+aplay -l          # should show "aic3104" device
+amixer sget PCM   # should show [xx%] volume control
+```
+
+**System packages needed:**
+```bash
+sudo apt install -y python3-pip python3-venv portaudio19-dev mpg123 pulseaudio-utils alsa-utils
+```
+
+> `pulseaudio-utils` provides `paplay`, which is used for volume blip sounds. PipeWire (the default audio server in Bookworm) holds the ALSA device after first use; `paplay` routes through PipeWire's PulseAudio compatibility layer and avoids "device busy" errors.
+
+> **Pi Zero WH:** the seeed-voicecard DKMS driver may work on older kernels (pre-6.18). Use the standard Seeed installation instructions if your Pi Zero WH is on a pre-6.18 kernel image. For the Pi Zero 2W on current OS images, always use `setup_2w.sh`.
+
+### 6.4 Install Pi Client Dependencies
 
 ```bash
-sudo apt install -y mpg123 python3-pip python3-venv
+sudo apt install -y mpg123 pulseaudio-utils alsa-utils python3-pip python3-venv portaudio19-dev
 ```
 
 ### 6.5 Install Pi Client
@@ -395,10 +418,11 @@ export KIDBOT_API_KEY="your-secret-key"    # match server
 
 ### 6.7 Run as a systemd Service
 
+A ready-to-use service file is included in the repo at `pi_setup/kidbot.service`:
+
 ```ini
-# /etc/systemd/system/kidbot-pi.service
 [Unit]
-Description=KidBot Pi Client
+Description=KidBot voice assistant
 After=network-online.target sound.target
 Wants=network-online.target
 
@@ -406,20 +430,32 @@ Wants=network-online.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/kidbot
-Environment=KIDBOT_SERVER=http://192.168.1.100:8765
-Environment=KIDBOT_API_KEY=your-secret-key
-ExecStart=/usr/bin/python3 -m pi_client.main
+ExecStart=/usr/bin/python3 -m pi_client
 Restart=on-failure
-RestartSec=10
+RestartSec=5
+Environment=KIDBOT_SERVER=http://192.168.1.100:8765
+Environment=KIDBOT_API_KEY=
+Environment=KIDBOT_LOG_FILE=/home/pi/kidbot/logs/kidbot.log
+Environment=STARTUP_VOLUME=45
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+# Install and enable
+sudo cp pi_setup/kidbot.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now kidbot-pi
+sudo systemctl enable --now kidbot
+
+# Check status
+sudo systemctl status kidbot
+
+# View logs
+journalctl -u kidbot -f
 ```
+
+Edit `KIDBOT_SERVER` in the service file to match your server's IP address. Edit `KIDBOT_API_KEY` if you have API key authentication enabled.
 
 ---
 
@@ -559,7 +595,9 @@ Override the default GPIO pins or ALSA control via environment variables:
 export VOL_UP_PIN=5        # BCM number of "volume up" button
 export VOL_DOWN_PIN=6      # BCM number of "volume down" button
 export VOL_STEP=5          # percent change per press (default 5)
-export ALSA_CONTROL=Master # amixer control name (default "Master")
+export VOL_MAX=85          # max PCM % — NS4150 amp clips above ~85%
+export ALSA_CONTROL=PCM    # amixer control name — AIC3104 DAC (default "PCM")
+export STARTUP_VOLUME=45   # PCM % for boot/shutdown chimes
 ```
 
 ### ReSpeaker 2-Mic HAT
@@ -627,9 +665,9 @@ The system prompt strictly instructs the model to avoid violence, adult content,
 cd /path/to/kidbot
 python -m server.main
 
-# 3. The Pi client starts automatically on boot via systemd
+# 3. The Pi client starts automatically on boot via systemd (kidbot.service)
 #    Or manually:
-python -m pi_client.main
+python3 -m pi_client
 ```
 
 ### Stop
@@ -639,19 +677,32 @@ python -m pi_client.main
 sudo systemctl stop kidbot
 
 # Pi client:
-sudo systemctl stop kidbot-pi
-# or: the Pi handles SIGINT / SIGTERM cleanly (GPIO cleanup, display off)
+sudo systemctl stop kidbot
+# or: the Pi handles SIGINT / SIGTERM cleanly (stops playback, plays shutdown chime, GPIO cleanup, display off)
 ```
 
-### Test Without Pi Hardware (Desktop)
+### Test Without Pi Hardware
 
+**Desktop GUI (Windows/Linux/Mac):**
 ```bash
 # Start the server first, then:
 cd /path/to/kidbot
 python test_gui.py
 ```
-
 The test GUI connects to `http://localhost:8765` by default. Change `SERVER_URL` at the top of `test_gui.py` to target a remote server.
+
+**Keyboard harness (on the Pi itself, no physical buttons needed):**
+```bash
+cd /home/pi/kidbot
+python3 scripts/keyboard_test.py
+
+# Controls:
+#   SPACE         — first press starts recording; press again to stop and send
+#   + or =        — volume up
+#   -             — volume down
+#   q or Ctrl+C   — quit (plays shutdown chime)
+```
+The keyboard harness runs `VolumeRocker(use_gpio=False)` so it does not conflict with GPIO pins held by a stopped service.
 
 ---
 
@@ -691,14 +742,14 @@ curl -H "X-API-Key: your-key" http://localhost:8765/health
 
 ```bash
 # Stdout
-python -m pi_client.main
+python3 -m pi_client
 
-# File
-export KIDBOT_LOG_FILE=/home/pi/kidbot.log
-python -m pi_client.main
+# File (configured via KIDBOT_LOG_FILE in the service file)
+export KIDBOT_LOG_FILE=/home/pi/kidbot/logs/kidbot.log
+python3 -m pi_client
 
 # systemd
-journalctl -u kidbot-pi -f
+journalctl -u kidbot -f
 ```
 
 ### Session Inspection
@@ -743,14 +794,22 @@ sudo iptables -I INPUT -p tcp --dport 8765 -j ACCEPT
 ```bash
 # On Pi — list audio devices
 arecord -l
+# Should show the AIC3104 codec as a capture device
 
-# Check ReSpeaker is detected
-arecord -D plughw:seeed -c 2 -r 16000 -f S16_LE test.wav
-aplay test.wav
+# Check mainline driver is loaded
+lsmod | grep snd_soc_tlv320
 
-# Check seeed-voicecard is installed
-lsmod | grep snd_soc_seeed_voicecard
+# Test recording directly (run before PipeWire starts, e.g. before kidbot boots)
+arecord -D plughw:1,0 -c 1 -r 16000 -f S16_LE -d 3 test.wav
+aplay -D plughw:1,0 test.wav
+
+# If "device busy": PipeWire holds the device. Route through PipeWire:
+parecord --channels=1 --rate=16000 --format=s16le test.raw
+# or restart PipeWire:
+systemctl --user restart pipewire
 ```
+
+> **Pi Zero 2W note:** If `arecord -l` shows no capture devices, the DTS overlay may not be loaded. Re-run `pi_setup/setup_2w.sh` and reboot. Check `dmesg | grep aic3104` for driver errors.
 
 ### Display not initialising
 
@@ -782,20 +841,44 @@ d.cleanup()
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Pressing rocker has no effect | `ALSA_CONTROL` name wrong | Run `amixer scontrols` to list names; set `ALSA_CONTROL=<name>` |
+| Volume stuck — only a few levels | Using `Line` or `Master` control | Switch to `PCM` control (0–127 range) — set `ALSA_CONTROL=PCM` |
 | Logs show "Could not read ALSA volume" | amixer not installed | `sudo apt install alsa-utils` |
 | Volume changes but bar not visible | Display not initialised | Check SPI is enabled and luma.lcd installed |
 | Button fires multiple times per press | Mechanical bounce | Increase `VOL_STEP` env var or add hardware debounce cap |
+| Sound distorts at high volume | Amp clipping | Set `VOL_MAX=85` — the NS4150 amp on the ReSpeaker HAT clips above ~85% PCM |
 
 ```bash
 # List available ALSA controls
 amixer scontrols
 
-# Test volume read manually
-amixer sget Master
+# Test volume read manually (AIC3104 PCM control)
+amixer sget PCM
 
 # Test volume set manually
-amixer sset Master 60%
+amixer sset PCM 60%
 ```
+
+### Volume blip not playing / "device busy" on aplay
+
+Raspberry Pi OS Bookworm uses PipeWire as the audio server. PipeWire acquires `hw:1,0` (the AIC3104 device) after the first audio client connects and holds it exclusively. Direct `aplay -D plughw:1,0` will fail with "Device or resource busy" while PipeWire is running.
+
+```bash
+# Identify what holds the ALSA device
+fuser /dev/snd/*
+# PID will typically be pipewire
+
+# Volume blips use paplay (PulseAudio API — PipeWire compatible)
+# If blips are silent, ensure pulseaudio-utils is installed:
+sudo apt install pulseaudio-utils
+
+# Test paplay directly
+paplay /usr/share/sounds/alsa/Front_Left.wav
+
+# If PipeWire is not running (e.g. fresh boot before any audio client):
+# aplay -D plughw:1,0 will work — this is how startup/shutdown chimes play
+```
+
+> The startup and shutdown chimes (`aplay -D plughw:1,0`) play at boot before PipeWire has a client, and at shutdown after PipeWire has been stopped. Any in-session sound (volume blip) must use `paplay`.
 
 ### Audio playback silence / distortion
 
@@ -804,10 +887,11 @@ amixer sset Master 60%
 which mpg123
 
 # Test directly
-echo "test" | espeak  # basic audio test
 mpg123 /path/to/test.mp3
 
 # Adjust volume
+amixer sget PCM
+amixer sset PCM 60%
 alsamixer
 ```
 
@@ -863,7 +947,7 @@ sudo systemctl restart kidbot
 cd /home/pi/kidbot
 git pull origin main
 pip3 install -r requirements/pi_requirements.txt
-sudo systemctl restart kidbot-pi
+sudo systemctl restart kidbot
 ```
 
 ### Changing the LLM Model

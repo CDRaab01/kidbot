@@ -116,13 +116,14 @@ class TestVolumeRockerAdjust:
 
     def test_clamps_at_max(self):
         vol = _import_volume()
-        with patch.object(vol, "_get_volume", return_value=98), \
+        start = vol.VOL_MAX - 2  # 2 below cap so +5 would exceed it
+        with patch.object(vol, "_get_volume", return_value=start), \
              patch.object(vol, "_set_volume"):
             rocker = vol.VolumeRocker()
-            with patch.object(vol, "_get_volume", return_value=98), \
+            with patch.object(vol, "_get_volume", return_value=start), \
                  patch.object(vol, "_set_volume") as mock_set:
                 rocker._adjust(+5)
-                mock_set.assert_called_once_with(100, vol.ALSA_CONTROL)
+                mock_set.assert_called_once_with(vol.VOL_MAX, vol.ALSA_CONTROL)
 
     def test_clamps_at_min(self):
         vol = _import_volume()
@@ -138,10 +139,10 @@ class TestVolumeRockerAdjust:
         """When already at VOL_MAX, _set_volume should not be called."""
         vol = _import_volume()
         on_change = MagicMock()
-        with patch.object(vol, "_get_volume", return_value=100), \
+        with patch.object(vol, "_get_volume", return_value=vol.VOL_MAX), \
              patch.object(vol, "_set_volume"):
             rocker = vol.VolumeRocker(on_change=on_change)
-            with patch.object(vol, "_get_volume", return_value=100), \
+            with patch.object(vol, "_get_volume", return_value=vol.VOL_MAX), \
                  patch.object(vol, "_set_volume") as mock_set:
                 rocker._adjust(+5)
                 mock_set.assert_not_called()
@@ -164,7 +165,9 @@ class TestVolumeRockerAdjust:
         with patch.object(vol, "_get_volume", return_value=50), \
              patch.object(vol, "_set_volume"):
             rocker = vol.VolumeRocker(on_change=on_change)
-        with patch.object(vol, "_get_volume", return_value=50), \
+        # First call returns current (50); second call is the hardware readback (55).
+        # _adjust bails early if readback == current, so the two must differ.
+        with patch.object(vol, "_get_volume", side_effect=[50, 55]), \
              patch.object(vol, "_set_volume"), \
              patch("threading.Thread") as mock_thread:
             rocker._adjust(+5)

@@ -20,9 +20,11 @@ KidBot is a FastAPI voice chatbot for a young child: a Raspberry Pi Zero 2W hand
 - **Driver**: mainline `snd_soc_tlv320aic3x` (kernel 6.18+). seeed-voicecard DKMS fails on ARMv7 6.18 (API changes).
 - **Overlay**: custom `aic3104-soundcard.dtbo` compiled from DTS source in `pi_setup/setup_2w.sh`.
 - **MICBIAS**: 2.5 V set via DTS property `ai3x-micbias-vg = <2>` — no i2cset needed.
-- **ADC warmup**: sigma-delta HPF takes ~2 s to settle after stream open. `AudioManager` pre-opens the mic stream at init and keeps it running so the first button press records clean audio.
+- **ADC warmup**: sigma-delta HPF takes ~2 s to settle after stream open. `AudioManager` pre-opens the mic stream at init and keeps it running so the first button press records clean audio. When the specific device is not found (fallback to default mic), the stream is closed after `stop_recording()` so other audio processes can access the device.
 - **Mixer persistence**: `alsactl store 1` saves state to `/var/lib/alsa/asound.state`; restored on next boot by alsa-utils.
-- **Startup sound**: Mario jingle generated once to `pi_client/mario_startup.wav` and played via `aplay` on every boot.
+- **Volume control**: Uses ALSA `PCM` control (DAC, 0–127, 63.5 dB range). The `Line` output driver (0–9) has insufficient range. `VOL_MAX=85` caps the PCM level to avoid NS4150 amp clipping above ~85%.
+- **PipeWire**: Raspberry Pi OS Bookworm runs PipeWire as the audio server. It holds `hw:1,0` after the first client connects. Direct `aplay -D plughw:1,0` fails with "device busy" once PipeWire is active. Volume blips use `paplay` (PulseAudio API, natively supported by PipeWire). Startup/shutdown chimes use `aplay -D plughw:1,0` at boot before PipeWire has a client, and play at `STARTUP_VOLUME` (45%) via the `_chime_volume()` context manager.
+- **Startup/shutdown sounds**: Generated once as WAV files (`pi_client/startup.wav`, `pi_client/shutdown.wav`) and played via `aplay -D plughw:1,0` at `STARTUP_VOLUME`.
 
 ### Key GPIO assignments
 ```
@@ -43,11 +45,16 @@ GPIO 27  — Status LED
 ```
 server/         FastAPI server — all production Python
 pi_client/      Raspberry Pi client — runs on the Pi only
+  __main__.py   Enables python3 -m pi_client
+pi_setup/       Pi setup scripts and service file
+  setup_2w.sh   Full automated setup for Pi Zero 2W
+  kidbot.service systemd unit file — copy to /etc/systemd/system/
 tests/
   server/       Server unit tests (243 collected, 0 skipped)
   pi/           Pi client unit tests (10 skipped — need $DISPLAY)
   live/         Live integration tests — require a running server, skipped in CI
 scripts/        CLI tools (not part of the server, not tested in CI)
+  keyboard_test.py  Keyboard-driven test harness (no physical buttons needed)
 requirements/   server_requirements.txt  |  pi_requirements.txt
 docs/           System and software manuals
 .github/workflows/  tests.yml (on PR)  |  deploy.yml (on push to main)
@@ -65,6 +72,11 @@ docs/           System and software manuals
 | `server/image_search.py` | 5-source parallel fetch (OpenVerse → Commons → Wikipedia → NASA → iNaturalist) |
 | `server/session.py` | `SessionStore` — in-memory dict + optional SQLite, per-session history + latest image/reply |
 | `server/guardrails.py` | `get_system_prompt()`, `is_input_safe()`, `is_output_safe()` |
+| `pi_client/audio.py` | `AudioManager` — PyAudio capture (idle loop), mpg123 playback, `stop_playback()`, `play_volume_blip()`, `_chime_volume()` |
+| `pi_client/volume.py` | `VolumeRocker` — GPIO or keyboard mode (`use_gpio=False`), amixer PCM control, reads back actual hardware level |
+| `pi_client/main.py` | Entry point, push-to-talk loop, `_on_volume_change()` wires display + blip |
+| `pi_setup/kidbot.service` | systemd unit file — install with `sudo cp pi_setup/kidbot.service /etc/systemd/system/` |
+| `scripts/keyboard_test.py` | Keyboard harness: SPACE=start, SPACE again=stop (0.5 s debounce), +/-=volume, q=quit. Runs without GPIO. |
 | `tests/conftest.py` | Stubs for all non-stdlib packages (RPi.GPIO, PIL, tkinter, kokoro_onnx, etc.) — loaded automatically by pytest |
 | `tests/live/conftest.py` | Server URL + skip-if-not-running fixture for live tests |
 

@@ -60,13 +60,23 @@ kidbot/
 │
 ├── pi_client/                  # Raspberry Pi client
 │   ├── __init__.py
+│   ├── __main__.py             # Enables python3 -m pi_client
 │   ├── main.py                 # Entry point, button callbacks, state machine
 │   ├── client.py               # HTTP client (requests + retry)
-│   ├── audio.py                # PyAudio recording + mpg123 playback
+│   ├── audio.py                # PyAudio recording, mpg123 playback, chimes, volume blip
 │   ├── button.py               # GPIO push-to-talk + LED
-│   ├── volume.py               # GPIO volume rocker + ALSA control
+│   ├── volume.py               # GPIO volume rocker + ALSA control (use_gpio=False for keyboard mode)
 │   ├── display.py              # ILI9341 LCD face animation
 │   └── config.py               # Pi-side config / env vars
+│
+├── pi_setup/                   # Pi configuration and service files
+│   ├── kidbot.service          # systemd unit file — copy to /etc/systemd/system/
+│   └── setup_2w.sh             # Full automated setup script for Pi Zero 2W
+│
+├── scripts/                    # CLI tools and test harnesses
+│   ├── keyboard_test.py        # Keyboard-driven Pi client (no physical buttons needed)
+│   ├── send_text.py            # Send text to server and print reply
+│   └── test_images.py         # Image search relevance tester
 │
 ├── test_gui.py                 # Desktop test console (tkinter)
 │
@@ -492,7 +502,10 @@ main()
   ├── audio  = AudioManager()
   ├── client = ServerClient()
   ├── display = DisplayManager()
-  ├── volume_rocker = VolumeRocker(on_change=display.show_volume)
+  ├── volume_rocker = VolumeRocker(on_change=_on_volume_change)
+  │       _on_volume_change(pct):
+  │           display.show_volume(pct)   ← cyan bar overlay on LCD
+  │           audio.play_volume_blip(pct) ← pitch-scaled confirmation tone
   │
   ├── ping server
   │     ├── success → prefetch_audio() + display.set_state("IDLE")
@@ -581,43 +594,97 @@ The `_headers` property automatically adds `X-API-Key` if `API_KEY` is configure
 **File:** `pi_client/audio.py`
 
 ```
+Initialisation:
+─────────────────────────────────────────────────────────────────
+__init__()
+  │
+  ├── _find_mic() → search PyAudio devices for MIC_DEVICE_HINT ("aic3104")
+  │       → stores _device_index (int) or None (fallback to default)
+  │
+  ├── if _device_index is not None:
+  │       open PyAudio InputStream immediately (16 kHz, int16, mono)
+  │       spawn _idle_loop() daemon thread  ← drains ADC buffer continuously
+  │       (AIC3104 sigma-delta HPF takes ~2 s to settle — pre-opening means
+  │        first button press records clean audio immediately)
+  │
+  └── _playback_proc = None  (tracked for stop_playback)
+
 Recording path:
 ─────────────────────────────────────────────────────────────────
 start_recording()
   │
-  ├── open PyAudio InputStream (16 kHz, int16, mono)
-  ├── spawn _capture_loop() daemon thread
-  │       └── while running: frames.append(stream.read(1024))
-  │               (stops after MAX_RECORD_SECONDS = 10 s)
-  └── set _recording = True
+  ├── _frames = []
+  ├── if _stream is None (fallback mic / device_index=None):
+  │       open PyAudio InputStream
+  │       spawn _idle_loop() daemon thread
+  └── _recording = True  (_idle_loop starts appending frames)
+
+_idle_loop() — daemon thread
+  │
+  └── while _stream is not None:
+        data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+        if _recording: _frames.append(data)
+        enforce MAX_RECORD_SECONDS cap
 
 stop_recording() → wav_path
   │
-  ├── _recording = False  (stops capture thread)
-  ├── open temp .wav file
-  ├── wave.write(all captured frames)
+  ├── _recording = False
+  ├── if _device_index is None (fallback mic):
+  │       close and discard stream  ← frees ALSA device for aplay/mpg123
+  │       (ReSpeaker/AIC3104 keeps stream open for ADC warmup)
+  ├── write _frames to temp .wav file
   └── return path
-
-Device selection:
-  PyAudio query_devices() → search for "seeed" (ReSpeaker)
-  → fallback to system default input if not found
-─────────────────────────────────────────────────────────────────
 
 Playback path:
 ─────────────────────────────────────────────────────────────────
 play_mp3_stream(chunk_iter)
   │
   ├── Popen(["mpg123", "-q", "-"])   ← reads from stdin
-  │
+  ├── _playback_proc = proc          ← tracked for stop_playback()
   ├── for chunk in chunk_iter:
+  │       if proc.poll() is not None: break  ← killed externally
   │       proc.stdin.write(chunk)
-  │
   └── proc.stdin.close(); proc.wait()
 
 play_mp3(mp3_bytes)
   │
   ├── write to temp file
+  ├── _playback_proc = proc
   └── Popen(["mpg123", "-q", tmp_path])
+
+stop_playback()
+  │
+  ├── atomically take _playback_proc (set to None)
+  └── kill proc if still running  ← used by shutdown handler / quit key
+
+Volume blip and chimes:
+─────────────────────────────────────────────────────────────────
+play_volume_blip(pct)
+  │
+  ├── re-assert PCM level via amixer (mpg123 can reset it on exit)
+  ├── generate 80 ms sine burst in memory
+  │       freq = 300 Hz × 4^(pct/100)  ← log scale: 300 Hz (0%) → 1200 Hz (100%)
+  │       8 ms attack / 25 ms release envelope
+  ├── wrap PCM samples in WAV header (io.BytesIO + wave module)
+  ├── write to temp .wav file
+  └── play via paplay (PulseAudio API)
+      NOTE: PipeWire holds hw:1,0 after first client connects.
+            Direct aplay/plughw fails with "device busy".
+            paplay routes through PipeWire's PulseAudio compatibility layer.
+
+_chime_volume() — context manager
+  │
+  ├── save current PCM %
+  ├── set PCM to STARTUP_VOLUME (default 45%)
+  ├── yield  ← sound plays here
+  └── restore previous PCM %
+
+play_startup_sound() / play_shutdown_sound()
+  │
+  ├── generate 8-bit chime WAV once (stored in pi_client/startup.wav / shutdown.wav)
+  └── with _chime_volume(): aplay -D plughw:1,0 <wav>
+      NOTE: startup/shutdown sounds play before/after PipeWire has a client,
+            so direct aplay succeeds. Volume is capped at STARTUP_VOLUME.
 ─────────────────────────────────────────────────────────────────
 ```
 
@@ -665,22 +732,30 @@ GPIO layout (BCM numbering):
   Pin 5  ──── VOL_UP   (IN, pull-up, active-low)
   Pin 6  ──── VOL_DOWN (IN, pull-up, active-low)
 
-VolumeRocker(on_change=None)
+VolumeRocker(on_change=None, use_gpio=True)
   │
-  ├── GPIO.setup(VOL_UP_PIN/VOL_DOWN_PIN, IN, pull_up_down=PUD_UP)
-  ├── GPIO.add_event_detect(FALLING, bouncetime=150)
+  ├── if use_gpio=True (default — Pi hardware):
+  │     GPIO.setup(VOL_UP_PIN/VOL_DOWN_PIN, IN, pull_up_down=PUD_UP)
+  │     GPIO.add_event_detect(FALLING, bouncetime=150)
+  │     _on_up(channel)   → daemon thread: _adjust(+VOL_STEP)
+  │     _on_down(channel) → daemon thread: _adjust(-VOL_STEP)
   │
-  ├── _on_up(channel)   → daemon thread: _adjust(+VOL_STEP)
-  ├── _on_down(channel) → daemon thread: _adjust(-VOL_STEP)
+  ├── if use_gpio=False (keyboard test mode — no GPIO access):
+  │     step_up()   → daemon thread: _adjust(+VOL_STEP)
+  │     step_down() → daemon thread: _adjust(-VOL_STEP)
   │
   ├── _adjust(delta)
   │     ├── _get_volume(ALSA_CONTROL)  → amixer sget → regex [(\d+)%]
   │     ├── new_pct = clamp(current + delta, VOL_MIN, VOL_MAX)
-  │     ├── if no change → return  (no display flash at limit)
-  │     ├── _set_volume(new_pct)  → amixer sset Master X%
-  │     └── on_change(new_pct)   → display.show_volume()
+  │     ├── if new_pct == current → return  (no callback at limit)
+  │     ├── _set_volume(new_pct)  → amixer sset PCM X%
+  │     ├── read back actual hardware level  ← AIC3104 PCM control has 128
+  │     │   steps; requested % may quantise; read-back reports true value
+  │     ├── if actual == current → return  (hardware didn't move)
+  │     └── on_change(actual_pct)
   │
-  └── cleanup() → GPIO.remove_event_detect(VOL_UP_PIN/VOL_DOWN_PIN)
+  └── cleanup()
+        if use_gpio: GPIO.remove_event_detect(VOL_UP_PIN/VOL_DOWN_PIN)
 
 Volume overlay:
   DisplayManager.show_volume(pct)
@@ -692,10 +767,14 @@ Volume overlay:
           auto-clears after 2 s
 ```
 
-**ALSA control name** defaults to `"Master"`. If your hardware uses a different name (e.g. ReSpeaker uses `"Master"` too, but some HATs differ), set `ALSA_CONTROL=<name>`. Run `amixer scontrols` to list available names.
+**ALSA control:** defaults to `"PCM"` (AIC3104 DAC, 0–127 range, 63.5 dB). The older `"Master"` / `"Line"` control only has 10 hardware steps (9 dB range) — insufficient for meaningful volume control. Run `amixer scontrols` to list all available names on your hardware.
+
+**VOL_MAX:** capped at `85` (%) by default. The NS4150 Class-D amp on the ReSpeaker HAT clips audibly above ~85% PCM level.
 
 **Shutdown ordering** in `main.py`:
 ```
+audio.stop_playback()      # kill any active mpg123 immediately
+audio.play_shutdown_sound()
 display.cleanup()          # stop render thread
 volume_rocker.cleanup()    # remove_event_detect on GPIO 5, 6
 button.cleanup()           # remove_event_detect on GPIO 17
@@ -803,7 +882,7 @@ show_image_url(url)
 | `LED_PIN` | `27` | — |
 | `SAMPLE_RATE` | `16000` | — |
 | `MAX_RECORD_SECONDS` | `10` | — |
-| `MIC_DEVICE_HINT` | `"seeed"` | — |
+| `MIC_DEVICE_HINT` | `"aic3104"` | — |
 | `API_KEY` | `""` | `KIDBOT_API_KEY` |
 | `LOG_FILE` | `""` | `KIDBOT_LOG_FILE` |
 | `DISPLAY_DC` | `25` | `DISPLAY_DC` |
@@ -815,10 +894,19 @@ show_image_url(url)
 | `VOL_DOWN_PIN` | `6` | `VOL_DOWN_PIN` |
 | `VOL_STEP` | `5` | `VOL_STEP` |
 | `VOL_MIN` | `0` | `VOL_MIN` |
-| `VOL_MAX` | `100` | `VOL_MAX` |
-| `ALSA_CONTROL` | `"Master"` | `ALSA_CONTROL` |
+| `VOL_MAX` | `85` | `VOL_MAX` |
+| `ALSA_CONTROL` | `"PCM"` | `ALSA_CONTROL` |
+| `STARTUP_VOLUME` | `45` | `STARTUP_VOLUME` |
 
 `DISPLAY_RST` defaults to `None` to avoid a GPIO conflict with `LED_PIN=27`.
+
+`MIC_DEVICE_HINT` matches the TLV320AIC3104 codec name reported by the mainline `snd_soc_tlv320aic3x` driver (kernel 6.18+). The older seeed-voicecard DKMS driver reported `"seeed"`.
+
+`ALSA_CONTROL=PCM` targets the AIC3104 DAC volume (0–127 steps, 63.5 dB range). The legacy `"Master"` / `"Line"` control has only 10 hardware steps — insufficient range.
+
+`VOL_MAX=85` caps the PCM level to avoid clipping on the NS4150 Class-D amp on the ReSpeaker HAT.
+
+`STARTUP_VOLUME=45` is the PCM % used during boot and shutdown chimes; the level is restored to its previous value after the chime plays.
 
 ---
 
@@ -1204,7 +1292,10 @@ tests/
 
 **System packages required:**
 - `mpg123` — MP3 playback (`sudo apt install mpg123`)
+- `pulseaudio-utils` — provides `paplay` for volume blip sounds (`sudo apt install pulseaudio-utils`)
 - SPI enabled in `raspi-config`
+
+> **PipeWire note:** Raspberry Pi OS Bookworm runs PipeWire as the audio server. PipeWire holds the ALSA hardware device (`hw:1,0`) after the first audio client connects. Direct `aplay -D plughw:1,0` calls will fail with "device busy" while PipeWire is active. `paplay` (via the PulseAudio compatibility layer) routes through PipeWire and works correctly. The startup/shutdown chimes use `aplay` directly because they play at boot/shutdown before PipeWire has acquired the device.
 
 ---
 
@@ -1266,8 +1357,9 @@ IMAGE_DISPLAY_SECONDS=8
 # Volume rocker
 VOL_UP_PIN=5                 # BCM GPIO for vol-up button (physical pin 29)
 VOL_DOWN_PIN=6               # BCM GPIO for vol-down button (physical pin 31)
-VOL_STEP=5                   # % change per press
+VOL_STEP=5                   # % change per press (~3 dB on AIC3104 PCM control)
 VOL_MIN=0
-VOL_MAX=100
-ALSA_CONTROL=Master          # amixer control name; run 'amixer scontrols' to list
+VOL_MAX=85                   # NS4150 amp clips above ~85% PCM — do not raise
+ALSA_CONTROL=PCM             # AIC3104 DAC control; run 'amixer scontrols' to list
+STARTUP_VOLUME=45            # PCM % for boot/shutdown chimes
 ```
