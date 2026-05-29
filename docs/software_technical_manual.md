@@ -999,16 +999,19 @@ LLM reply contains: "Did you know that Tyrannosaurus Rex ... [IMAGE: Tyrannosaur
 Server (_sentence_stream):
   1. Detect [IMAGE: term] in sentence value
   2. Strip tag → yield clean text to TTS
-  3. After streaming complete → asyncio.ensure_future(_fetch_and_store_image())
+  3. After streaming complete → _spawn_image_fetch() marks the session image
+     "pending" and starts _fetch_and_store_image() via asyncio.create_task(),
+     keeping a strong reference so the task can't be garbage-collected
 
 _fetch_and_store_image():
   1. fetch_image_url("Tyrannosaurus Rex dinosaur")
-     → 5-source parallel search → highest-priority URL
+     → 5-source parallel search → highest-priority (SSRF-checked) URL
   2. _sessions.set_latest_image(session_id, url)
+  3. clears the "pending" flag (in a finally) whether or not a URL was found
 
 Pi (after audio playback):
-  1. GET /session/{id}/latest_image
-     → {"image_url": "https://upload.wikimedia.org/..."}
+  1. Poll GET /session/{id}/latest_image until a URL arrives or pending=False
+     → {"image_url": "https://upload.wikimedia.org/...", "pending": false}
   2. display.show_image_url(url)      → download → show 8 s → IDLE
   3. (test GUI also shows inline in chat)
 ```
@@ -1102,9 +1105,11 @@ Clear conversation history for a session.
 
 ### GET `/session/{session_id}/latest_image`
 One-shot: returns and clears the image URL generated during the last exchange.
+`pending` is `true` when a background image fetch is still running and no URL
+is ready yet, so the client should poll again rather than give up.
 
 ```json
-{"image_url": "https://..."}  // or "" if none
+{"image_url": "https://...", "pending": false}  // image_url "" if none
 ```
 
 ### GET `/settings/voices`
@@ -1273,8 +1278,7 @@ tests/
 | `soundfile>=0.12` | WAV file I/O |
 | `requests>=2.32` | Image search HTTP |
 | `slowapi>=0.1.9` | Rate limiting |
-| `numpy` | Audio array handling |
-| `Pillow>=10` | TTS intermediate format |
+| `numpy>=1.24` | Audio array handling |
 
 **System packages required:**
 - `ffmpeg` — MP3 encoding
