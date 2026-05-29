@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
 
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title=f"{BOT_NAME} Server", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title=f"{BOT_NAME} Server", version="0.5.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
