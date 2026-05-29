@@ -179,6 +179,49 @@ class TestInputLengthLimits:
 
 
 # ---------------------------------------------------------------------------
+# _run_llm_pipeline() image fallback (non-streaming path)
+# ---------------------------------------------------------------------------
+
+class TestRunLlmPipelineImageFallback:
+    def test_explicit_picture_request_fetches_image_without_tag(self):
+        """When the LLM reply has no [IMAGE:] tag but the child asked for a
+        picture, the non-streaming pipeline falls back to the user's message."""
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url", return_value="http://img/x.jpg") as fetch:
+            llm.respond.return_value = "Sure! Spider-Man is amazing."  # no tag
+            sessions.get_history.return_value = []
+            sessions.get_shown_image_urls.return_value = []
+            reply, url = main._run_llm_pipeline(
+                "show me a picture of Spider-Man", "s1")
+        assert url == "http://img/x.jpg"
+        assert fetch.call_args[0][0] == "Spider-Man"
+
+    def test_no_picture_request_no_fallback_fetch(self):
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url") as fetch:
+            llm.respond.return_value = "Dinosaurs were huge reptiles."  # no tag
+            sessions.get_history.return_value = []
+            reply, url = main._run_llm_pipeline("tell me about dinosaurs", "s1")
+        assert url == ""
+        fetch.assert_not_called()
+
+    def test_explicit_tag_takes_priority_over_fallback(self):
+        import server.main as main
+        with patch.object(main, "_llm") as llm, \
+             patch.object(main, "_sessions") as sessions, \
+             patch.object(main, "fetch_image_url", return_value="http://img/y.jpg") as fetch:
+            llm.respond.return_value = "Here you go. [IMAGE: tiger photo]"
+            sessions.get_history.return_value = []
+            sessions.get_shown_image_urls.return_value = []
+            main._run_llm_pipeline("show me a picture of a lion", "s1")
+        assert fetch.call_args[0][0] == "tiger photo"
+
+
+# ---------------------------------------------------------------------------
 # _sentence_stream() error branch
 # ---------------------------------------------------------------------------
 

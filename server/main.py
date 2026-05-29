@@ -156,6 +156,10 @@ def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
     raw_reply = _llm.respond(text, history=history)
     reply_text, image_term = _extract_image(raw_reply)
     _sessions.add_exchange(session_id, text, reply_text)
+    if not image_term:
+        # Model omitted the [IMAGE: ...] tag — if the child explicitly asked to
+        # see a picture, search from their message (mirrors the streaming path).
+        image_term = _fallback_image_term(text)
     image_url = ""
     if image_term:
         logger.info("[%s] Fetching image for: %r", session_id, image_term)

@@ -38,17 +38,21 @@ _bot_headers = {"X-API-Key": API_KEY} if API_KEY else {}
 # ---------------------------------------------------------------------------
 # Built-in test cases: (message to send, plain-English topic to verify)
 # ---------------------------------------------------------------------------
+# Prompts explicitly request a picture: the system prompt only emits an
+# [IMAGE: ...] tag on an explicit picture request, so "tell me about X" would
+# (correctly) return no image and fail this test. "show me a picture of X"
+# exercises the real image path.
 DEFAULT_TESTS: list[tuple[str, str]] = [
-    ("tell me about Spiderman",            "Spider-Man (the Marvel superhero in a red and blue costume)"),
-    ("tell me about Batman",               "Batman (the DC superhero in a dark cape and cowl)"),
-    ("tell me about Elsa from Frozen",     "Elsa from Frozen (a blonde woman with ice powers)"),
-    ("what is a blue whale?",              "a blue whale (the largest animal on Earth)"),
-    ("tell me about a T-Rex dinosaur",     "a Tyrannosaurus Rex dinosaur"),
-    ("what is a volcano?",                 "a volcano (mountain with lava or eruption)"),
-    ("tell me about the moon",             "the moon (Earth's natural satellite)"),
-    ("what is a rainbow?",                 "a rainbow (colourful arc in the sky)"),
-    ("tell me about an elephant",          "an elephant (large grey animal with a trunk)"),
-    ("what is the Eiffel Tower?",          "the Eiffel Tower (famous iron tower in Paris)"),
+    ("show me a picture of Spider-Man",        "Spider-Man (the Marvel superhero in a red and blue costume)"),
+    ("show me a picture of Batman",            "Batman (the DC superhero in a dark cape and cowl)"),
+    ("show me a picture of Elsa from Frozen",  "Elsa from Frozen (a blonde woman with ice powers)"),
+    ("show me a picture of a blue whale",      "a blue whale (the largest animal on Earth)"),
+    ("show me a picture of a T-Rex dinosaur",  "a Tyrannosaurus Rex dinosaur"),
+    ("show me a picture of a volcano",         "a volcano (mountain with lava or eruption)"),
+    ("show me a picture of the moon",          "the moon (Earth's natural satellite)"),
+    ("show me a picture of a rainbow",         "a rainbow (colourful arc in the sky)"),
+    ("show me a picture of an elephant",       "an elephant (large grey animal with a trunk)"),
+    ("show me a picture of the Eiffel Tower",  "the Eiffel Tower (famous iron tower in Paris)"),
 ]
 
 
@@ -223,11 +227,12 @@ def main() -> None:
     topics     = [a for a in args if not a.startswith("--")]
 
     if topics:
-        # Single ad-hoc topic: turn the bare topic into a "tell me about X" query
-        # The user can also pass the full message in quotes.
+        # Single ad-hoc topic: turn the bare topic into an explicit picture
+        # request so the image path is exercised. A full message in quotes
+        # (lowercase, >3 words) is sent verbatim.
         topic = " ".join(topics)
         if not topic[0].islower() or len(topic.split()) <= 3:
-            message = f"tell me about {topic}"
+            message = f"show me a picture of {topic}"
         else:
             message = topic
         tests = [(message, topic)]
