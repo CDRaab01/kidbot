@@ -43,13 +43,21 @@ class TextToSpeech:
         self.kokoro = Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
         self.voice = KOKORO_VOICE
         self.speed = KOKORO_SPEED
+        self._voices_cache: list[str] | None = None
         logger.info("TTS ready. Voice: %s  Speed: %s", self.voice, self.speed)
 
     def available_voices(self) -> list[str]:
-        """Return sorted list of voice names from the voices file."""
+        """Return sorted list of voice names from the voices file.
+
+        The voices file is ~50 MB, so the result is cached after the first
+        successful load (this is called on every /settings and /settings/voices
+        request)."""
+        if self._voices_cache is not None:
+            return self._voices_cache
         try:
             data = np.load(KOKORO_VOICES_PATH)
-            return sorted(data.files)
+            self._voices_cache = sorted(data.files)
+            return self._voices_cache
         except Exception:
             return [self.voice]
 

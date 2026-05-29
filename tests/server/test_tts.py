@@ -128,3 +128,18 @@ class TestTextToSpeech:
 
         for path in created_paths:
             assert not os.path.exists(path), f"Temp file not cleaned up: {path}"
+
+    def test_available_voices_loads_file_once_and_caches(self):
+        tts, _ = self._make_tts()
+        fake = MagicMock(files=["af_bella", "bm_lewis", "am_adam"])
+        with patch("server.tts.np.load", return_value=fake) as mock_load:
+            first = tts.available_voices()
+            second = tts.available_voices()
+        assert first == ["af_bella", "am_adam", "bm_lewis"]  # sorted
+        assert second == first
+        mock_load.assert_called_once()  # cached — file read only once
+
+    def test_available_voices_falls_back_when_file_missing(self):
+        tts, _ = self._make_tts()
+        with patch("server.tts.np.load", side_effect=FileNotFoundError):
+            assert tts.available_voices() == [tts.voice]
