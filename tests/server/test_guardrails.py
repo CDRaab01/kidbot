@@ -73,6 +73,22 @@ class TestGetSystemPrompt:
         assert "stay on the topic" in lowered
         assert "do not switch the subject" in lowered
 
+    def test_prompt_encourages_emotional_attunement(self):
+        lowered = _BASE_PROMPT.lower()
+        assert "how" in lowered and "feel" in lowered
+        assert "rough day" in lowered or "acknowledge it" in lowered
+
+    def test_prompt_encourages_curiosity_about_the_child(self):
+        assert "curious about" in _BASE_PROMPT.lower()
+        assert "their day" in _BASE_PROMPT.lower()
+
+    def test_prompt_encourages_callbacks_to_earlier(self):
+        assert "earlier in the conversation" in _BASE_PROMPT.lower()
+
+    def test_prompt_uses_neutral_pronouns(self):
+        import re
+        assert re.search(r"\b(he|him|his)\b", _BASE_PROMPT, re.IGNORECASE) is None
+
     def test_prompt_does_not_treat_favourites_as_redirect_bait(self):
         """The old phrasing pivoted to space/dinosaurs after finishing; ensure
         the favourites are framed as draw-on-when-raised, not steer-toward."""
