@@ -17,6 +17,11 @@ LLM_MAX_TOKENS     = 700
 # Keeps the prompt from growing unbounded and crowding out the response budget.
 LLM_MAX_HISTORY_EXCHANGES = int(os.getenv("LLM_MAX_HISTORY", "8"))
 LLM_TEMPERATURE    = 0.7
+# Request timeout (seconds) for LM Studio calls. Without it the OpenAI SDK
+# default (~10 min) lets a hung LM Studio stall a request — or the streaming
+# producer thread — for minutes. For streaming this bounds the gap between
+# tokens; for non-streaming it bounds the whole response.
+LLM_TIMEOUT        = float(os.getenv("LLM_TIMEOUT", "120"))
 
 # Child's name — set CHILD_NAME in .env (required; no default so it must be configured)
 CHILD = os.getenv("CHILD_NAME", "Kid")

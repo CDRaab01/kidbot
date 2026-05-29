@@ -3,7 +3,8 @@ import re
 from typing import Iterator
 
 from openai import OpenAI
-from .config import LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS, LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE
+from .config import (LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS,
+                     LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE, LLM_TIMEOUT)
 from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, get_system_prompt,
                          is_input_safe, is_output_safe)
 
@@ -82,7 +83,7 @@ def _strip_reasoning(text: str) -> str:
 
 class LLMInterface:
     def __init__(self):
-        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
+        self.client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio", timeout=LLM_TIMEOUT)
         try:
             models = [m.id for m in self.client.models.list().data]
             if not any(LM_STUDIO_MODEL in m for m in models):

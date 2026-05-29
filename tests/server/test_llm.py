@@ -90,6 +90,15 @@ class TestLLMInterface:
             llm.respond("Hello again")
         assert mock_gsp.call_count == 2
 
+    def test_client_constructed_with_timeout(self):
+        from server.config import LLM_TIMEOUT
+        with patch("server.llm.OpenAI") as MockOpenAI:
+            MockOpenAI.return_value.models.list.return_value = MagicMock(
+                data=[SimpleNamespace(id="google/gemma-4-e4b")]
+            )
+            LLMInterface()
+        assert MockOpenAI.call_args.kwargs["timeout"] == LLM_TIMEOUT
+
     def test_model_not_found_logs_warning(self, mock_openai):
         mock_openai.models.list.return_value = MagicMock(
             data=[SimpleNamespace(id="some-other-model")]
