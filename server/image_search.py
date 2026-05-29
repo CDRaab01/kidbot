@@ -22,12 +22,39 @@ Pass `exclude_urls` to skip previously shown images within the same session,
 so repeated requests for the same topic surface fresh content.
 """
 import concurrent.futures
+import ipaddress
 import logging
+from urllib.parse import urlparse
+
 import requests
 
 from .config import BOT_NAME
 
 logger = logging.getLogger(__name__)
+
+
+def _is_safe_image_url(url: str) -> bool:
+    """Basic SSRF guard for URLs returned by the external image APIs.
+
+    Requires http(s) and rejects loopback/private/link-local hosts (e.g. the
+    cloud metadata endpoint) so a misbehaving source can't make the server or
+    the Pi fetch an internal address. This is a literal-IP / scheme check, not
+    full DNS-resolution SSRF protection — the sources are trusted public APIs.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or host == "localhost" or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # a hostname (not an IP literal) — allowed
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)
 
 _HEADERS = {"User-Agent": f"{BOT_NAME}/1.0 (educational child chatbot; contact via github)"}
 _TIMEOUT = 5  # seconds per source
@@ -262,8 +289,13 @@ def fetch_image_url(
             url = fut.result()
         except Exception:
             continue
-        if url:
-            logger.info("Image found for %r via %s: %s", term, getattr(src, '__name__', src), url)
-            return url
+        if not url:
+            continue
+        if not _is_safe_image_url(url):
+            logger.warning("Discarding unsafe image URL from %s: %s",
+                           getattr(src, "__name__", src), url)
+            continue
+        logger.info("Image found for %r via %s: %s", term, getattr(src, '__name__', src), url)
+        return url
     logger.warning("No image found for %r from any source.", term)
     return None
