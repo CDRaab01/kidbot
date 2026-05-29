@@ -31,10 +31,13 @@ _REASONING_RE = re.compile(
     r'looking at (this|the)|given that\b|in this case\b|'
     # "This is another greeting / similar / a repeat..."
     r'this is (another|a (greeting|repeat|continuation|follow.?up)|similar|the same)\b|'
-    # "Since they/the user/the child haven't..."
-    r'since (they|the (user|child|kid)|he|she|we)\b|'
-    # meta-observation about what the user said / is asking
-    r'they (are|have|seem|want|need|said|asked|haven\'t|haven.t)\b|'
+    # "Since the user/the child haven't..." (kept narrow: bare "since they/he/
+    # she/we" also opens legitimate answers like "Since they live underwater…")
+    r'since the (user|child|kid)\b|'
+    # meta-observation about what the user said / is asking. Bare "they are/
+    # have/seem" was dropping real answer openings ("They are huge reptiles."),
+    # so only the clearly-meta forms remain.
+    r'they (want|need|asked|said|haven\'t|haven.t|are (asking|wondering|trying|looking|probably|likely)|seem to)\b|'
     # "Based on..." / situational reasoning openers
     r'based on\b|in this situation\b|'
     # structured thinking headers (e.g. "Thinking Process:", "Thinking:")
