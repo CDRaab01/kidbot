@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
 
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 8765
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8765"))
 
 # Faster-Whisper STT
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")  # tiny/base/small/medium
@@ -23,7 +23,8 @@ LLM_TEMPERATURE    = 0.7
 # tokens; for non-streaming it bounds the whole response.
 LLM_TIMEOUT        = float(os.getenv("LLM_TIMEOUT", "120"))
 
-# Child's name — set CHILD_NAME in .env (required; no default so it must be configured)
+# Child's name — set CHILD_NAME in .env to personalise the bot.
+# Falls back to "Kid" (so BOT_NAME = "KidBot") when unset.
 CHILD = os.getenv("CHILD_NAME", "Kid")
 BOT_NAME = f"{CHILD}Bot"
 
