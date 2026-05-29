@@ -460,6 +460,24 @@ class TestLatestImageEndpoint:
         assert resp2.json()["image_url"] == ""
 
 
+class TestSessionIsolation:
+    """The shared SessionStore must not leak state between tests."""
+
+    def test_a_writes_a_leaky_image(self):
+        from server.main import _sessions
+        _sessions.get_history("leak-probe")
+        _sessions.set_latest_image("leak-probe", "https://upload.wikimedia.org/leak.jpg")
+        assert _sessions.get_and_clear_latest_image("leak-probe") != ""
+
+    def test_b_does_not_see_previous_test_state(self):
+        # Runs after test_a; the autouse reset fixture must have cleared it.
+        from server.main import _sessions
+        assert "leak-probe" not in _sessions._sessions
+        with _loaded_client() as (client, *_):
+            resp = client.get("/session/leak-probe/latest_image")
+        assert resp.json()["image_url"] == ""
+
+
 # ---------------------------------------------------------------------------
 # GET /session/{session_id}/latest_reply
 # ---------------------------------------------------------------------------
