@@ -222,6 +222,70 @@ class TestRunLlmPipelineImageFallback:
 
 
 # ---------------------------------------------------------------------------
+# Non-streaming endpoints offload blocking work to the threadpool
+# ---------------------------------------------------------------------------
+
+class TestNonStreamingOffload:
+    def _spy_threadpool(self, calls):
+        import server.main as main
+        real = main.run_in_threadpool
+
+        async def spy(func, *a, **k):
+            calls.append(getattr(func, "__name__", str(func)))
+            return await real(func, *a, **k)
+
+        return patch.object(main, "run_in_threadpool", spy)
+
+    def test_chat_text_offloads_pipeline_and_tts(self):
+        import server.main as main
+        calls = []
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText"), \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             self._spy_threadpool(calls):
+            llm = MagicMock()
+            llm.respond.return_value = "Dinosaurs are great!"
+            MockLLM.return_value = llm
+            tts = MagicMock()
+            tts.synthesize.return_value = b"mp3"
+            MockTTS.return_value = tts
+            with TestClient(app) as client:
+                resp = client.post("/chat_text", data={"text": "hi", "session_id": "s1"})
+        assert resp.status_code == 200
+        # Both the LLM pipeline and the TTS response build were offloaded.
+        assert "_run_llm_pipeline" in calls
+        assert "_mp3_response" in calls
+
+    def test_chat_offloads_transcription(self):
+        calls = []
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             self._spy_threadpool(calls):
+            stt = MagicMock()
+            stt.transcribe.return_value = "hello"
+            stt.transcribe.__name__ = "transcribe"  # so the spy can record it
+            MockSTT.return_value = stt
+            llm = MagicMock()
+            llm.respond.return_value = "Hi!"
+            MockLLM.return_value = llm
+            tts = MagicMock()
+            tts.synthesize.return_value = b"mp3"
+            MockTTS.return_value = tts
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/chat",
+                    files={"audio": ("a.wav", b"RIFFdata", "audio/wav")},
+                    data={"session_id": "s1"},
+                )
+        assert resp.status_code == 200
+        assert "transcribe" in calls
+        assert "_run_llm_pipeline" in calls
+
+
+# ---------------------------------------------------------------------------
 # _sentence_stream() error branch
 # ---------------------------------------------------------------------------
 

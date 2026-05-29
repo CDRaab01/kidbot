@@ -210,22 +210,25 @@ async def chat(
         with os.fdopen(tmp_fd, "wb") as f:
             f.write(audio_data)
 
+        # STT, LLM and TTS are all synchronous/CPU-bound; run them in the
+        # threadpool so a multi-second turn doesn't block the event loop (and
+        # stall /health, /latest_image, etc.).
         t0 = time.perf_counter()
-        text = _stt.transcribe(tmp_path)
+        text = await run_in_threadpool(_stt.transcribe, tmp_path)
         t_stt = time.perf_counter() - t0
 
         if not text:
             logger.info("[%s] No speech detected.", session_id)
-            return _mp3_response(SORRY_TRY_AGAIN)
+            return await run_in_threadpool(_mp3_response, SORRY_TRY_AGAIN)
 
         logger.info("[%s] STT: %.2fs  heard: %r", session_id, t_stt, text)
 
         t1 = time.perf_counter()
-        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        reply_text, image_url = await run_in_threadpool(_run_llm_pipeline, text, session_id)
         t_llm = time.perf_counter() - t1
 
         t2 = time.perf_counter()
-        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        mp3_response = await run_in_threadpool(_mp3_response, reply_text, text, image_url)
         t_tts = time.perf_counter() - t2
 
         logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
@@ -234,7 +237,7 @@ async def chat(
 
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
-        return _mp3_response(SORRY_CANT_THINK)
+        return await run_in_threadpool(_mp3_response, SORRY_CANT_THINK)
 
     finally:
         try:
@@ -260,18 +263,19 @@ async def chat_text(
         raise HTTPException(status_code=400, detail="Input too long")
     logger.info("[%s] Text input: %r", session_id, text)
     try:
+        # Offload the synchronous LLM + TTS work so the event loop stays free.
         t1 = time.perf_counter()
-        reply_text, image_url = _run_llm_pipeline(text, session_id)
+        reply_text, image_url = await run_in_threadpool(_run_llm_pipeline, text, session_id)
         t_llm = time.perf_counter() - t1
         t2 = time.perf_counter()
-        mp3_response = _mp3_response(reply_text, transcription=text, image_url=image_url)
+        mp3_response = await run_in_threadpool(_mp3_response, reply_text, text, image_url)
         t_tts = time.perf_counter() - t2
         logger.info("[%s] LLM: %.2fs  TTS: %.2fs  total: %.2fs",
                     session_id, t_llm, t_tts, t_llm + t_tts)
         return mp3_response
     except Exception as exc:
         logger.error("[%s] Pipeline error: %s", session_id, exc, exc_info=True)
-        return _mp3_response(SORRY_CANT_THINK)
+        return await run_in_threadpool(_mp3_response, SORRY_CANT_THINK)
 
 
 @app.delete("/session/{session_id}")
