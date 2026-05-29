@@ -7,7 +7,7 @@ A voice-activated AI chatbot built for young children. A child presses a button 
 ## How It Works
 
 ```
-[Pi Zero WH]                          [Windows PC / Server]
+[Pi Zero 2W]                          [Windows PC / Server]
   Button press
        │
   Records audio  ──── WAV over HTTP ──▶  Speech-to-Text  (Faster-Whisper)
@@ -47,12 +47,13 @@ Conversation history is kept per session (up to 10 exchanges). Sessions persist 
 
 | File | Purpose |
 |---|---|
-| `main.py` | Entry point, push-to-talk loop |
+| `__main__.py` | Enables `python3 -m pi_client` |
+| `main.py` | Entry point, push-to-talk loop, shutdown handler |
 | `client.py` | HTTP client for the server |
-| `audio.py` | PyAudio recording and mpg123 playback |
+| `audio.py` | PyAudio recording, mpg123 playback, startup/shutdown chimes, volume blip |
 | `display.py` | Waveshare 2.4" ILI9341 animated display |
 | `button.py` | GPIO push-to-talk button + LED |
-| `volume.py` | GPIO volume rocker via amixer |
+| `volume.py` | GPIO volume rocker via amixer (`use_gpio=False` for keyboard mode) |
 | `config.py` | Pi-side configuration |
 
 ### API Endpoints
@@ -86,9 +87,10 @@ Response headers on audio endpoints:
 - `ffmpeg` installed (`winget install ffmpeg` on Windows)
 - Kokoro model files: `kokoro-v1.0.onnx` and `voices-v1.0.bin`
 
-**Raspberry Pi Zero WH:**
-- Raspbian Lite
+**Raspberry Pi Zero 2W (or WH):**
+- Raspberry Pi OS Lite (32-bit)
 - `mpg123` (`sudo apt install mpg123`)
+- `pulseaudio-utils` (`sudo apt install pulseaudio-utils`) — provides `paplay` for volume blip sounds
 - Waveshare 2.4" ILI9341 LCD
 
 ---
@@ -129,11 +131,24 @@ python -m server.main
 ## Pi Client Setup
 
 ```bash
-pip install -r requirements/pi_requirements.txt
-python -m pi_client.main
+pip3 install -r requirements/pi_requirements.txt
+
+# Run directly
+python3 -m pi_client
+
+# Or install and run the systemd service (recommended)
+sudo cp pi_setup/kidbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kidbot
 ```
 
-Set `SERVER_URL` in `pi_client/config.py` (or via env var) to point at the server.
+Set `KIDBOT_SERVER` env var (or edit `pi_setup/kidbot.service`) to point at the server IP.
+
+For testing without physical buttons, use the keyboard harness:
+```bash
+python3 scripts/keyboard_test.py
+# SPACE = start/stop recording  |  + = vol up  |  - = vol down  |  q = quit
+```
 
 ---
 
@@ -157,6 +172,19 @@ All server settings are env vars. Copy `.env.example` to `.env` to configure.
 | `PERSIST_SESSIONS` | _(empty)_ | Set to `1` to enable SQLite session persistence |
 | `SESSION_DB_PATH` | `server/sessions.db` | SQLite database path |
 | `LOG_FILE` | _(empty)_ | Log file path — empty logs to stdout only |
+
+**Pi client env vars** (set in `pi_setup/kidbot.service` or environment):
+
+| Variable | Default | Description |
+|---|---|---|
+| `KIDBOT_SERVER` | `http://192.168.1.100:8765` | Server URL |
+| `KIDBOT_API_KEY` | _(empty)_ | Must match server |
+| `KIDBOT_LOG_FILE` | _(empty)_ | Log file path; empty = stdout only |
+| `ALSA_CONTROL` | `PCM` | ALSA mixer control name — run `amixer scontrols` to list |
+| `VOL_STEP` | `5` | Volume percent change per button press |
+| `VOL_MIN` | `0` | Minimum volume % |
+| `VOL_MAX` | `85` | Maximum volume % — capped to avoid NS4150 amp clipping above ~85% |
+| `STARTUP_VOLUME` | `45` | PCM % for boot and shutdown chimes |
 
 ---
 
@@ -195,6 +223,10 @@ make test-images ARGS="Spiderman"  # test one topic
 # Send text and print the reply (no audio hardware needed)
 python scripts/send_text.py "what is the biggest animal?"
 python scripts/send_text.py              # interactive mode
+
+# Keyboard-driven Pi client test (no physical buttons needed — runs on any desktop)
+python3 scripts/keyboard_test.py
+# SPACE = start/stop recording  |  + = vol up  |  - = vol down  |  q = quit
 
 # Test image relevance (requires running server, optional vision model)
 python scripts/test_images.py            # all 10 built-in topics
