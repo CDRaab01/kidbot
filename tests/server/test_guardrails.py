@@ -67,6 +67,20 @@ class TestGetSystemPrompt:
     def test_math_mode_instructs_work_out_answer_first(self):
         assert "work out the correct answer" in _BASE_PROMPT
 
+    def test_prompt_instructs_staying_on_topic(self):
+        """Prompt must tell the model to deepen the current topic, not pivot."""
+        lowered = _BASE_PROMPT.lower()
+        assert "stay on the topic" in lowered
+        assert "do not switch the subject" in lowered
+
+    def test_prompt_does_not_treat_favourites_as_redirect_bait(self):
+        """The old phrasing pivoted to space/dinosaurs after finishing; ensure
+        the favourites are framed as draw-on-when-raised, not steer-toward."""
+        lowered = _BASE_PROMPT.lower()
+        assert "never steer toward them while" in lowered
+        # The bare "Favourite topics:" bullet that encouraged pivoting is gone.
+        assert "favourite topics: engineering" not in lowered
+
 
 # --- is_input_safe ---
 
