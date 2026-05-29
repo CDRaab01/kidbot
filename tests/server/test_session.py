@@ -176,6 +176,13 @@ class TestLatestImage:
     def test_get_shown_image_urls_returns_empty_for_unknown_session(self):
         assert self.store.get_shown_image_urls("nobody") == []
 
+    def test_default_db_path_lives_in_mounted_sessions_dir(self):
+        # The default must sit inside server/sessions/ to match the Docker
+        # volume mount and .gitignore.
+        from server.config import SESSION_DB_PATH
+        from pathlib import PurePosixPath
+        assert PurePosixPath(SESSION_DB_PATH).parent.name == "sessions"
+
     def test_image_pending_defaults_false(self):
         self.store.get_history("s1")
         assert self.store.is_image_pending("s1") is False

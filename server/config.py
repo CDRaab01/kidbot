@@ -40,9 +40,13 @@ except ValueError:
 TEMP_DIR = Path("server/temp")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Session persistence (optional SQLite backend)
+# Session persistence (optional SQLite backend).
+# Default lives inside server/sessions/ so it matches the Docker volume mount
+# (docker-compose mounts ./server/sessions) and the .gitignore entry — the old
+# server/sessions.db sat at the repo root, so it neither persisted across
+# container rebuilds nor was ignored by git.
 PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").lower() in ("1", "true", "yes")
-SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions.db")
+SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions/sessions.db")
 
 # API key authentication — set on both server and Pi; empty = disabled (dev mode)
 API_KEY = os.getenv("KIDBOT_API_KEY", "")
