@@ -330,7 +330,13 @@ async def _sentence_stream(text: str, session_id: str) -> AsyncGenerator[bytes, 
         if not clean:
             continue
         full_parts.append(clean)
-        mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        try:
+            mp3 = await run_in_threadpool(_tts.synthesize, clean)
+        except Exception as exc:
+            # A single sentence failing to synthesise (e.g. a transient ffmpeg
+            # error) must not abort the whole stream — skip it and keep going.
+            logger.error("[%s] TTS failed for sentence %r: %s", session_id, clean, exc)
+            continue
         yield mp3
 
     t.join()

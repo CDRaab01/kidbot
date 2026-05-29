@@ -315,6 +315,32 @@ class TestSentenceStreamErrorBranch:
         assert resp.status_code == 200
         mock_sessions.add_exchange.assert_not_called()
 
+    def test_one_sentence_tts_failure_does_not_abort_stream(self):
+        """A single TTS failure mid-stream is skipped; later sentences still play."""
+        limiter._storage.reset()
+        with patch("server.main.SpeechToText") as MockSTT, \
+             patch("server.main.LLMInterface") as MockLLM, \
+             patch("server.main.TextToSpeech") as MockTTS, \
+             patch("server.main._sessions"):
+
+            MockSTT.return_value = MagicMock()
+            llm = MagicMock()
+            llm.respond_stream.return_value = iter(
+                ["First sentence here.", "Second sentence here."])
+            MockLLM.return_value = llm
+
+            tts = MagicMock()
+            # First sentence raises, second succeeds.
+            tts.synthesize.side_effect = [RuntimeError("ffmpeg boom"), b"mp3two"]
+            MockTTS.return_value = tts
+
+            with TestClient(app) as client:
+                resp = client.post("/chat_text_stream",
+                                   data={"text": "hi", "session_id": "s1"})
+
+        assert resp.status_code == 200
+        assert resp.content == b"mp3two"  # only the surviving sentence
+
     def test_llm_exception_stream_returns_empty_body(self):
         """Stream body should be empty (no sentences synthesised) on error."""
         limiter._storage.reset()
