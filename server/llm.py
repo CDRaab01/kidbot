@@ -5,8 +5,8 @@ from typing import Iterator
 from openai import OpenAI
 from .config import (LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS,
                      LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE, LLM_TIMEOUT)
-from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, get_system_prompt,
-                         is_input_safe, is_output_safe)
+from .guardrails import (get_system_prompt, is_input_safe, is_output_safe,
+                         output_blocked_response, redirect_response)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ class LLMInterface:
     def respond(self, user_text: str, history: list | None = None) -> str:
         if not is_input_safe(user_text):
             logger.warning("Blocked input: %r", user_text)
-            return REDIRECT_RESPONSE
+            return redirect_response()
 
         try:
             response = self.client.chat.completions.create(
@@ -129,15 +129,15 @@ class LLMInterface:
             reply = _strip_reasoning(_THINK_RE.sub("", raw).strip())
         except Exception as exc:
             logger.error("LM Studio request failed: %s", exc)
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         if not reply:
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         safe, reason = is_output_safe(reply)
         if not safe:
             logger.warning("Output blocked — %s", reason)
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         logger.info("LLM reply: %r", reply)
         return reply
@@ -146,7 +146,7 @@ class LLMInterface:
         """Yield sentence-sized chunks from the LLM with per-sentence safety checks."""
         if not is_input_safe(user_text):
             logger.warning("Blocked input (stream): %r", user_text)
-            yield REDIRECT_RESPONSE
+            yield redirect_response()
             return
 
         try:
@@ -159,7 +159,7 @@ class LLMInterface:
             )
         except Exception as exc:
             logger.error("LM Studio stream request failed: %s", exc)
-            yield OUTPUT_BLOCKED_RESPONSE
+            yield output_blocked_response()
             return
 
         buffer = ""
@@ -214,7 +214,7 @@ class LLMInterface:
                 safe, reason = is_output_safe(sentence)
                 if not safe:
                     logger.warning("Stream output blocked — %s", reason)
-                    yield OUTPUT_BLOCKED_RESPONSE
+                    yield output_blocked_response()
                     return
                 logger.info("LLM stream sentence: %r", sentence)
                 yield sentence
@@ -231,4 +231,4 @@ class LLMInterface:
                 yield remaining
             else:
                 logger.warning("Stream final output blocked — %s", reason)
-                yield OUTPUT_BLOCKED_RESPONSE
+                yield output_blocked_response()

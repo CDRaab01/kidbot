@@ -1,3 +1,4 @@
+import random
 import re
 import logging
 from datetime import datetime
@@ -148,16 +149,36 @@ _PERSONAL_INFO_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Safe fallback responses (cycled through to avoid repetition)
-REDIRECT_RESPONSE = (
-    "That's a great question for your parents! "
-    "Why don't you ask your mum or dad about that one?"
-)
+# Safe fallback responses — small pools picked from at random so a child who
+# trips the filter repeatedly doesn't hear the exact same robotic line. Every
+# entry must itself pass is_output_safe (no blocked keywords, < 900 chars).
+REDIRECT_RESPONSES = [
+    "Ooh, that's a brilliant one to ask a grown-up! Why not check with your mum or dad?",
+    "That sounds like a perfect question for a grown-up — try asking someone at home!",
+    "Hmm, that's one for a grown-up to explain. Shall we find something else to wonder about together?",
+    "Let's save that one for a grown-up! In the meantime, what else has been on your mind?",
+]
 
-OUTPUT_BLOCKED_RESPONSE = (
-    "Hmm, I think that's something your parents would be better at explaining! "
-    "Why not go ask them?"
-)
+OUTPUT_BLOCKED_RESPONSES = [
+    "Hmm, let me come at that a different way — what part are you most curious about?",
+    "Oops, that came out a bit muddled! Can you ask me that another way?",
+    "I think a grown-up could explain that one better — want to chat about something else fun?",
+    "Let me think about that one differently — what made you curious about it?",
+]
+
+# Canonical first entries kept as module-level names for back-compatibility.
+REDIRECT_RESPONSE = REDIRECT_RESPONSES[0]
+OUTPUT_BLOCKED_RESPONSE = OUTPUT_BLOCKED_RESPONSES[0]
+
+
+def redirect_response() -> str:
+    """A varied, warm 'ask a grown-up' line for blocked input."""
+    return random.choice(REDIRECT_RESPONSES)
+
+
+def output_blocked_response() -> str:
+    """A varied, warm fallback for blocked/unusable model output."""
+    return random.choice(OUTPUT_BLOCKED_RESPONSES)
 
 
 _INPUT_PATTERN = re.compile(

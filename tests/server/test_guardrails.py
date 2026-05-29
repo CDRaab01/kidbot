@@ -1,11 +1,15 @@
 import pytest
 from unittest.mock import patch
 from server.guardrails import (
+    OUTPUT_BLOCKED_RESPONSES,
     REDIRECT_RESPONSE,
+    REDIRECT_RESPONSES,
     _BASE_PROMPT,
     get_system_prompt,
     is_input_safe,
     is_output_safe,
+    output_blocked_response,
+    redirect_response,
 )
 
 
@@ -227,3 +231,18 @@ class TestIsOutputSafe:
         # The canned redirect text must never be blocked by the output filter
         ok, reason = is_output_safe(REDIRECT_RESPONSE)
         assert ok is True, f"REDIRECT_RESPONSE was blocked: {reason}"
+
+    def test_all_fallback_pool_entries_are_safe(self):
+        # Every varied fallback must itself pass the output filter.
+        for text in (*REDIRECT_RESPONSES, *OUTPUT_BLOCKED_RESPONSES):
+            ok, reason = is_output_safe(text)
+            assert ok is True, f"fallback blocked: {text!r} ({reason})"
+
+    def test_fallback_pools_have_variety(self):
+        assert len(set(REDIRECT_RESPONSES)) >= 3
+        assert len(set(OUTPUT_BLOCKED_RESPONSES)) >= 3
+
+    def test_pickers_return_pool_members(self):
+        for _ in range(20):
+            assert redirect_response() in REDIRECT_RESPONSES
+            assert output_blocked_response() in OUTPUT_BLOCKED_RESPONSES
