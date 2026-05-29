@@ -102,6 +102,11 @@ class TestSpeak:
             resp = client.post("/speak", data={"text": "   "})
         assert resp.status_code == 400
 
+    def test_returns_503_when_models_not_ready(self):
+        with patch("server.main._tts", None):
+            resp = TestClient(app).post("/speak", data={"text": "hello"})
+        assert resp.status_code == 503
+
     def test_tts_called_with_provided_text(self):
         with _loaded_client() as (client, _, _, tts):
             client.post("/speak", data={"text": "say this"})

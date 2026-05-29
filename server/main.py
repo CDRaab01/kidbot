@@ -181,11 +181,14 @@ async def health():
 @limiter.limit("20/minute")
 async def speak(request: Request, text: str = Form(...)):
     """Convert text to MP3. Used by the Pi to pre-fetch error audio clips."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Models not ready")
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text")
     if len(text) > 10_000:
         raise HTTPException(status_code=400, detail="Input too long")
-    return Response(content=_tts.synthesize(text), media_type="audio/mpeg")
+    mp3 = await run_in_threadpool(_tts.synthesize, text)
+    return Response(content=mp3, media_type="audio/mpeg")
 
 
 @app.post("/chat")
