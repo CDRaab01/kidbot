@@ -28,7 +28,14 @@ DISPLAY_BL        = int(os.getenv("DISPLAY_BL", "24"))
 DISPLAY_SPI_PORT  = int(os.getenv("DISPLAY_SPI_PORT", "0"))
 _raw_rst = os.getenv("DISPLAY_RST", "")
 DISPLAY_RST       = int(_raw_rst) if _raw_rst.strip() else None  # None avoids LED_PIN=27 conflict
-IMAGE_DISPLAY_SECONDS = int(os.getenv("IMAGE_DISPLAY_SECONDS", "8"))
+# Minimum time an image stays on screen once it actually renders. The timer
+# starts at the moment the picture appears, not at show_image_url(), so a slow
+# fetch can't burn through the budget before the child sees anything.
+IMAGE_DISPLAY_SECONDS = int(os.getenv("IMAGE_DISPLAY_SECONDS", "6"))
+# Hard cap so an image can never be stuck on screen forever.
+IMAGE_DISPLAY_MAX_SECONDS = int(os.getenv("IMAGE_DISPLAY_MAX_SECONDS", "12"))
+# How long the "couldn't find a picture" face stays up after a fetch failure.
+IMAGE_MISSING_SECONDS = int(os.getenv("IMAGE_MISSING_SECONDS", "2"))
 DISPLAY_FPS       = int(os.getenv("DISPLAY_FPS", "8"))   # 8 fps suits Pi Zero WH single-core
 
 # Volume rocker (BCM numbering)

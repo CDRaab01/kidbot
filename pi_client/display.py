@@ -33,7 +33,12 @@ VOL_COLOR   = (0,  200, 200)   # cyan — same as eye colour
 VOL_BG      = (40,  40,  60)
 VOL_DISPLAY_SECONDS = 2
 
-FACE_STATES = ("IDLE", "LISTENING", "THINKING", "SPEAKING", "HAPPY", "ERROR", "IMAGE")
+FACE_STATES = (
+    "IDLE", "LISTENING", "THINKING", "SPEAKING", "HAPPY", "ERROR",
+    "IMAGE",          # downloaded picture rendered via _image_override
+    "LOADING",        # waiting for / fetching an image
+    "IMAGE_MISSING",  # image fetch / decode failed — gentle "couldn't find it"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +148,18 @@ def _render_face(state: str, frame: int, battery: Optional[int]) -> "PIL.Image.I
     elif state == "ERROR":
         _draw_x_eyes(draw, leye_x, reye_x, eye_y)
         _draw_mouth_frown(draw, cx, cy + 30)
+
+    elif state == "LOADING":
+        # Same wide-eyed look as LISTENING but with rotating dots underneath
+        # so the child sees the bot is reaching for something, not frozen.
+        _draw_circle_eyes(draw, leye_x, reye_x, eye_y, r=22)
+        _draw_mouth_flat(draw, cx, cy + 30)
+        _draw_thinking_dots(draw, cx, cy + 55, frame)
+
+    elif state == "IMAGE_MISSING":
+        # Warmer than ERROR — a small apologetic face, not a crash icon.
+        _draw_idle_eyes(draw, leye_x, reye_x, eye_y, frame)
+        _draw_mouth_flat(draw, cx, cy + 30)
 
     return img
 
@@ -354,12 +371,18 @@ class DisplayManager:
     def show_image_url(self, url: str) -> None:
         """Download url in a background thread and switch to IMAGE state.
 
-        Captures a token before launching the fetch; if a later set_state /
-        show_image_url bumps the token, the in-flight fetch silently discards
-        its result on completion."""
+        Enters LOADING immediately so the child sees the bot reaching for
+        something, captures a token before launching the fetch; if a later
+        set_state / show_image_url bumps the token, the in-flight fetch
+        silently discards its result on completion."""
         with self._lock:
             self._image_token += 1
             token = self._image_token
+            # Don't go through set_state — set_state would bump the token
+            # again and invalidate the token we just captured for the fetch.
+            if self._state != "IMAGE":
+                self._state = "LOADING"
+                self._image_override = None
         threading.Thread(target=self._load_image, args=(url, token), daemon=True).start()
 
     def show_volume(self, pct: int) -> None:
@@ -381,9 +404,17 @@ class DisplayManager:
     # ------------------------------------------------------------------
 
     def _load_image(self, url: str, token: int) -> None:
-        from pi_client.config import IMAGE_DISPLAY_SECONDS
+        from pi_client.config import IMAGE_DISPLAY_SECONDS, IMAGE_MISSING_SECONDS
         img = _fetch_pil_image(url, W, H - 24)
         if img is None:
+            # Surface the failure: the child waited, give them feedback
+            # instead of silently going back to IDLE.
+            with self._lock:
+                if token != self._image_token:
+                    return  # user already moved on
+                self._state = "IMAGE_MISSING"
+                self._image_override = None
+                self._image_expiry = time.time() + IMAGE_MISSING_SECONDS
             return
         # Centre on dark background
         canvas = __import__("PIL.Image", fromlist=["Image"]).new("RGB", (W, H), BG)
@@ -404,6 +435,9 @@ class DisplayManager:
                 return
             self._image_override = canvas
             self._state = "IMAGE"
+            # The timer starts NOW, when the image actually appears, so a
+            # slow fetch can't burn through the display budget before the
+            # child sees anything.
             self._image_expiry = time.time() + IMAGE_DISPLAY_SECONDS
 
     def _animate(self) -> None:
@@ -425,8 +459,11 @@ class DisplayManager:
                 vol_pct = self._vol_pct
                 vol_expiry = self._vol_expiry
 
-            # Auto-revert IMAGE state after timeout
-            if state == "IMAGE" and now > img_expiry:
+            # Auto-revert IMAGE / IMAGE_MISSING state after timeout. Both
+            # are time-bound modes that should give way to IDLE; we don't
+            # bump the token here because no in-flight fetch is being
+            # cancelled — the timer simply expired.
+            if state in ("IMAGE", "IMAGE_MISSING") and now > img_expiry:
                 with self._lock:
                     self._state = "IDLE"
                     self._image_override = None

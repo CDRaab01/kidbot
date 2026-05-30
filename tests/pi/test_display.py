@@ -137,15 +137,6 @@ class TestRenderSnapshot:
 # ---------------------------------------------------------------------------
 
 class TestLoadImage:
-    def test_fetch_failure_returns_silently(self):
-        """Today, a failed fetch is silent. C3 will change this to IMAGE_MISSING."""
-        dm, disp_mod = _make_display()
-        dm._state = "SPEAKING"
-        with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
-            dm._load_image("http://x/y.jpg", token=dm._image_token)
-        assert dm._state == "SPEAKING"
-        assert dm._image_override is None
-
     def test_successful_fetch_sets_image_state_and_expiry(self):
         dm, disp_mod = _make_display()
         before = time.time()
@@ -209,6 +200,75 @@ class TestShowImageUrl:
 # ---------------------------------------------------------------------------
 # Token-based cancellation — the core fix from C2
 # ---------------------------------------------------------------------------
+
+class TestLoadingAndMissing:
+    def test_show_image_url_enters_loading_immediately(self):
+        dm, _ = _make_display()
+        dm._state = "SPEAKING"
+        with patch("threading.Thread"):
+            dm.show_image_url("http://x/y.jpg")
+        assert dm._state == "LOADING"
+
+    def test_show_image_url_during_image_does_not_drop_into_loading(self):
+        """If we're already showing an image and a new one arrives, keep the
+        old image on screen rather than flashing to LOADING in between."""
+        dm, _ = _make_display()
+        dm._state = "IMAGE"
+        dm._image_override = MagicMock()
+        with patch("threading.Thread"):
+            dm.show_image_url("http://x/y.jpg")
+        # State stays IMAGE; the token still bumps so the in-flight stale
+        # fetch (if any) drops, and _load_image will swap in the new canvas
+        # when it completes.
+        assert dm._state == "IMAGE"
+
+    def test_failed_fetch_enters_image_missing(self):
+        dm, disp_mod = _make_display()
+        dm._state = "SPEAKING"
+        before = time.time()
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
+            dm._load_image("http://x/y.jpg", token=dm._image_token)
+        assert dm._state == "IMAGE_MISSING"
+        assert dm._image_override is None
+        assert dm._image_expiry > before
+
+    def test_failed_fetch_with_stale_token_does_not_change_state(self):
+        dm, disp_mod = _make_display()
+        dm._state = "LISTENING"
+        stale = dm._image_token
+        dm._image_token += 1  # someone moved on
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
+            dm._load_image("http://x/y.jpg", token=stale)
+        assert dm._state == "LISTENING"  # unchanged
+
+    def test_image_display_timer_starts_when_image_renders(self):
+        """Pre-C3 the timer started at show_image_url(); now at first paint.
+        We can't easily measure show_image_url latency in a unit test, so we
+        assert the timer is set inside _load_image, not in show_image_url."""
+        dm, disp_mod = _make_display()
+        fake_img = MagicMock(width=100, height=100)
+        with patch("threading.Thread"):
+            dm.show_image_url("http://x/y.jpg")
+        # After show_image_url alone, the timer is not yet set.
+        assert dm._image_expiry == 0.0
+        before = time.time()
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=fake_img), \
+             patch.object(disp_mod, "_draw_battery"), \
+             patch.dict(sys.modules,
+                        {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
+                         "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
+            dm._load_image("http://x/y.jpg", token=dm._image_token)
+        assert dm._image_expiry > before
+
+
+class TestImageMissingAutoRevert:
+    def test_expired_image_missing_reverts_to_idle(self):
+        dm, disp_mod = _make_display()
+        dm._state = "IMAGE_MISSING"
+        dm._image_expiry = time.time() - 1
+        _run_one_tick(dm, disp_mod)
+        assert dm._state == "IDLE"
+
 
 class TestImageTokenCancellation:
     def test_set_state_off_image_bumps_token(self):

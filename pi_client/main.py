@@ -57,14 +57,22 @@ _IMAGE_POLL_INTERVAL = 0.5  # seconds
 def _poll_for_image():
     """Poll latest_image until a URL arrives or the fetch is no longer pending.
 
-    Returns the image URL, or None if no image was produced.
+    Returns the image URL, or None if no image was produced. While polling
+    we surface LOADING on the display so the child sees the bot is reaching
+    for something rather than a frozen SPEAKING mouth; if the first poll
+    already says nothing is coming, we exit immediately without changing
+    state (the common no-image turn).
     """
+    showed_loading = False
     for _ in range(_IMAGE_POLL_ATTEMPTS):
         url, pending = client.get_latest_image()
         if url:
             return url
         if not pending:
             return None
+        if not showed_loading:
+            display.set_state("LOADING")
+            showed_loading = True
         time.sleep(_IMAGE_POLL_INTERVAL)
     return None
 

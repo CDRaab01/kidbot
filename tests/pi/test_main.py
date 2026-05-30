@@ -104,3 +104,24 @@ class TestPollForImage:
         with patch("time.sleep"):
             assert main_mod._poll_for_image() is None
         assert main_mod.client.get_latest_image.call_count == main_mod._IMAGE_POLL_ATTEMPTS
+
+    def test_no_loading_state_on_immediate_no_image(self, main_mod):
+        """Common no-image turn: don't flash LOADING for a single poll."""
+        main_mod.client.get_latest_image.return_value = (None, False)
+        with patch("time.sleep"):
+            main_mod._poll_for_image()
+        # set_state("LOADING") was NOT called — the only state change is
+        # whatever main.py does AFTER _poll_for_image returns.
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "LOADING" not in states
+
+    def test_shows_loading_while_pending(self, main_mod):
+        """Slow image fetch — LOADING appears so the child sees us trying."""
+        main_mod.client.get_latest_image.side_effect = [
+            (None, True), (None, True), ("http://img/late.jpg", False),
+        ]
+        with patch("time.sleep"):
+            main_mod._poll_for_image()
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        # LOADING shown exactly once (not on every pending poll).
+        assert states.count("LOADING") == 1
