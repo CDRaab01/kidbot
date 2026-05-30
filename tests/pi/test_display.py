@@ -323,6 +323,58 @@ class TestImageTokenCancellation:
 # Every declared state has a dispatch arm in _render_face
 # ---------------------------------------------------------------------------
 
+class TestFitImageToCanvas:
+    """Cover-crop logic with letterbox fallback for extreme aspects."""
+
+    def _img(self, w, h):
+        """Mock PIL image with the .copy / .resize / .crop / .thumbnail
+        surface the fitter uses; trace which path was taken."""
+        m = MagicMock(width=w, height=h)
+        m.copy.return_value = MagicMock(width=w, height=h, thumbnail=MagicMock())
+        m.resize.return_value = MagicMock(crop=MagicMock(return_value=MagicMock()))
+        return m
+
+    def _run(self, src):
+        import pi_client.display as disp_mod
+        with patch.dict(sys.modules, {"PIL": MagicMock(Image=MagicMock(LANCZOS=1))}):
+            return disp_mod._fit_image_to_canvas(src, 320, 216)
+
+    def test_square_source_takes_cover_crop_path(self):
+        src = self._img(500, 500)
+        self._run(src)
+        src.resize.assert_called_once()  # cover-crop path
+        src.copy.assert_not_called()     # not the letterbox fallback
+
+    def test_wider_source_resizes_to_match_height(self):
+        # 800×400 → fit height 216 → resize to (432, 216), crop to 320×216
+        src = self._img(800, 400)
+        self._run(src)
+        target = src.resize.call_args[0][0]
+        # height matches; width is at least the canvas width
+        assert target[1] == 216
+        assert target[0] >= 320
+
+    def test_taller_source_resizes_to_match_width(self):
+        # 400×600 ratio 0.667 vs canvas 1.481 → mismatch 2.22, under the
+        # 2.5 cap → still cover-crop.
+        src = self._img(400, 600)
+        self._run(src)
+        target = src.resize.call_args[0][0]
+        assert target[0] == 320
+        assert target[1] >= 216
+
+    def test_extreme_aspect_falls_back_to_letterbox(self):
+        # 2000×200 aspect 10:1 vs canvas ~1.48:1 → >2.5× mismatch → letterbox
+        src = self._img(2000, 200)
+        self._run(src)
+        src.copy.assert_called_once()       # letterbox path
+        src.resize.assert_not_called()      # not the cover-crop path
+
+    def test_zero_dimension_returns_none(self):
+        src = self._img(0, 200)
+        assert self._run(src) is None
+
+
 class TestAllStatesDispatch:
     def test_every_face_state_has_a_dispatch_arm(self):
         """Static check on the source so the FACE_STATES tuple stays in sync

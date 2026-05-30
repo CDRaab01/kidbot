@@ -85,18 +85,63 @@ def _read_battery_percent() -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def _fetch_pil_image(url: str, max_w: int, max_h: int):
-    """Download and resize a PIL image to fit within max_w x max_h."""
+    """Download a PIL image and fit it to max_w × max_h.
+
+    Uses cover-crop (resize so the shorter side matches, centre-crop the long
+    side) so the picture fills the screen for the common case. For images
+    with an extreme aspect ratio mismatch (more than ~2.5×), falls back to
+    letterbox so a banner photo doesn't get cropped to a nonsense slice.
+    Returns None on download / decode / verify failure.
+    """
     try:
         import urllib.request
         from PIL import Image
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = resp.read()
+        # verify() walks the file looking for corruption without decoding
+        # pixels — cheap defence against half-downloaded / broken images
+        # that today decode "successfully" then render blank.
+        Image.open(io.BytesIO(data)).verify()
         img = Image.open(io.BytesIO(data)).convert("RGB")
-        img.thumbnail((max_w, max_h), Image.LANCZOS)
-        return img
+        return _fit_image_to_canvas(img, max_w, max_h)
     except Exception as exc:
         logger.warning("Could not fetch display image: %s", exc)
         return None
+
+
+_ASPECT_MISMATCH_LIMIT = 2.5  # falls back to letterbox above this
+
+
+def _fit_image_to_canvas(img, max_w: int, max_h: int):
+    """Cover-crop img to exactly (max_w, max_h), or letterbox if the aspect
+    mismatch is extreme. Returns a new PIL Image; never mutates the input.
+    """
+    from PIL import Image
+    src_w, src_h = img.width, img.height
+    if src_w <= 0 or src_h <= 0:
+        return None
+    src_aspect = src_w / src_h
+    dst_aspect = max_w / max_h
+    # If the picture is wildly different shape from the screen, cover-crop
+    # would throw away most of it. Letterbox instead so the child sees the
+    # whole thing.
+    if max(src_aspect / dst_aspect, dst_aspect / src_aspect) > _ASPECT_MISMATCH_LIMIT:
+        scaled = img.copy()
+        scaled.thumbnail((max_w, max_h), Image.LANCZOS)
+        return scaled
+    # Cover-crop: resize so the shorter side matches, centre-crop the long.
+    if src_aspect > dst_aspect:
+        # Source is wider — match height, crop horizontally.
+        new_h = max_h
+        new_w = int(round(src_w * (max_h / src_h)))
+    else:
+        # Source is taller — match width, crop vertically.
+        new_w = max_w
+        new_h = int(round(src_h * (max_w / src_w)))
+    resized = img.resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - max_w) // 2
+    top = (new_h - max_h) // 2
+    return resized.crop((left, top, left + max_w, top + max_h))
 
 
 # ---------------------------------------------------------------------------
@@ -416,10 +461,12 @@ class DisplayManager:
                 self._image_override = None
                 self._image_expiry = time.time() + IMAGE_MISSING_SECONDS
             return
-        # Centre on dark background
+        # img is already sized to (W, H - 24) by _fit_image_to_canvas in the
+        # cover-crop branch, or letterboxed inside that box in the fallback;
+        # either way centre-pasting at (0, 24) is correct.
         canvas = __import__("PIL.Image", fromlist=["Image"]).new("RGB", (W, H), BG)
         x = (W - img.width) // 2
-        y = 24 + (H - 24 - img.height) // 2
+        y = 24 + ((H - 24) - img.height) // 2
         canvas.paste(img, (x, y))
         # Draw battery on top
         from PIL import ImageDraw
