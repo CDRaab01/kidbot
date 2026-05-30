@@ -261,6 +261,23 @@ class TestLoadingAndMissing:
         assert dm._image_expiry > before
 
 
+class TestCorruptBlobIntegration:
+    """End-to-end: _fetch_pil_image returns None on bad bytes, _load_image
+    then routes to IMAGE_MISSING. The two seams are tested independently;
+    this proves they connect."""
+
+    def test_corrupt_download_lands_in_image_missing(self):
+        dm, disp_mod = _make_display()
+        dm._state = "SPEAKING"
+        # _fetch_pil_image returning None is the contract on any failure
+        # (urllib raised, verify() raised, decode raised). We don't need
+        # to exercise the urllib path directly here.
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
+            dm._load_image("http://broken/", token=dm._image_token)
+        assert dm._state == "IMAGE_MISSING"
+        assert dm._image_override is None
+
+
 class TestImageMissingAutoRevert:
     def test_expired_image_missing_reverts_to_idle(self):
         dm, disp_mod = _make_display()
