@@ -142,7 +142,7 @@ class TestLoadImage:
         dm, disp_mod = _make_display()
         dm._state = "SPEAKING"
         with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
-            dm._load_image("http://x/y.jpg")
+            dm._load_image("http://x/y.jpg", token=dm._image_token)
         assert dm._state == "SPEAKING"
         assert dm._image_override is None
 
@@ -157,7 +157,7 @@ class TestLoadImage:
              patch.dict(sys.modules,
                         {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
                          "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
-            dm._load_image("http://x/y.jpg")
+            dm._load_image("http://x/y.jpg", token=dm._image_token)
         assert dm._state == "IMAGE"
         assert dm._image_override is not None
         assert dm._image_expiry > before
@@ -171,7 +171,7 @@ class TestLoadImage:
              patch.dict(sys.modules,
                         {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
                          "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
-            dm._load_image("http://x/y.jpg")
+            dm._load_image("http://x/y.jpg", token=dm._image_token)
         # _draw_battery is called once with the battery snapshot.
         assert draw_bat.called
         last_call_battery = draw_bat.call_args[0][1]
@@ -190,9 +190,73 @@ class TestShowImageUrl:
         Thread.assert_called_once()
         kwargs = Thread.call_args.kwargs
         assert kwargs.get("daemon") is True
-        # Target should be _load_image with the URL.
+        # Target should be _load_image with the URL and current token.
         assert kwargs["target"] == dm._load_image
-        assert kwargs["args"] == ("http://x/y.jpg",)
+        url, token = kwargs["args"]
+        assert url == "http://x/y.jpg"
+        assert token == dm._image_token
+
+    def test_each_call_bumps_token(self):
+        dm, _ = _make_display()
+        with patch("threading.Thread"):
+            dm.show_image_url("a")
+            t1 = dm._image_token
+            dm.show_image_url("b")
+            t2 = dm._image_token
+        assert t2 == t1 + 1
+
+
+# ---------------------------------------------------------------------------
+# Token-based cancellation — the core fix from C2
+# ---------------------------------------------------------------------------
+
+class TestImageTokenCancellation:
+    def test_set_state_off_image_bumps_token(self):
+        dm, _ = _make_display()
+        dm._state = "IMAGE"
+        before = dm._image_token
+        dm.set_state("LISTENING")
+        assert dm._image_token == before + 1
+
+    def test_stale_load_image_does_not_overwrite_fresh_state(self):
+        """If a press lands during a download, the in-flight result must drop."""
+        dm, disp_mod = _make_display()
+        dm._state = "SPEAKING"
+        # Simulate a press that lands while the download is in flight: the
+        # press calls set_state("LISTENING") and bumps the token. The
+        # _load_image that started before the press completes with the old
+        # token and should silently discard.
+        with patch("threading.Thread"):
+            dm.show_image_url("http://x/y.jpg")
+        stale_token = dm._image_token
+        # The press happens — bump the token.
+        dm.set_state("LISTENING")
+        # Stale download now completes.
+        fake_img = MagicMock(width=200, height=100)
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=fake_img), \
+             patch.object(disp_mod, "_draw_battery"), \
+             patch.dict(sys.modules,
+                        {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
+                         "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
+            dm._load_image("http://x/y.jpg", token=stale_token)
+        # The fresh LISTENING state survives; no IMAGE override applied.
+        assert dm._state == "LISTENING"
+        assert dm._image_override is None
+
+    def test_fresh_load_image_with_current_token_succeeds(self):
+        dm, disp_mod = _make_display()
+        fake_img = MagicMock(width=200, height=100)
+        with patch("threading.Thread"):
+            dm.show_image_url("http://x/y.jpg")
+        token = dm._image_token
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=fake_img), \
+             patch.object(disp_mod, "_draw_battery"), \
+             patch.dict(sys.modules,
+                        {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
+                         "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
+            dm._load_image("http://x/y.jpg", token=token)
+        assert dm._state == "IMAGE"
+        assert dm._image_override is not None
 
 
 # ---------------------------------------------------------------------------

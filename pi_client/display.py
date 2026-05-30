@@ -313,6 +313,12 @@ class DisplayManager:
         self._state = "IDLE"
         self._image_override = None   # PIL Image while in IMAGE state
         self._image_expiry = 0.0
+        # Token incremented on every state change and every show_image_url(),
+        # so an in-flight _load_image can detect that the conversation has
+        # moved on and quietly drop its result instead of overwriting a fresh
+        # face with a stale picture. Avoids the one-frame flash where a press
+        # mid-IMAGE would briefly show the old image under LISTENING.
+        self._image_token = 0
 
         self._vol_pct: Optional[int] = None
         self._vol_expiry = 0.0
@@ -342,10 +348,19 @@ class DisplayManager:
             self._state = state
             if state != "IMAGE":
                 self._image_override = None
+                # Any in-flight _load_image is now stale — invalidate its token.
+                self._image_token += 1
 
     def show_image_url(self, url: str) -> None:
-        """Download url in a background thread and switch to IMAGE state."""
-        threading.Thread(target=self._load_image, args=(url,), daemon=True).start()
+        """Download url in a background thread and switch to IMAGE state.
+
+        Captures a token before launching the fetch; if a later set_state /
+        show_image_url bumps the token, the in-flight fetch silently discards
+        its result on completion."""
+        with self._lock:
+            self._image_token += 1
+            token = self._image_token
+        threading.Thread(target=self._load_image, args=(url, token), daemon=True).start()
 
     def show_volume(self, pct: int) -> None:
         """Show a transient volume bar overlay for VOL_DISPLAY_SECONDS seconds."""
@@ -365,7 +380,7 @@ class DisplayManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _load_image(self, url: str) -> None:
+    def _load_image(self, url: str, token: int) -> None:
         from pi_client.config import IMAGE_DISPLAY_SECONDS
         img = _fetch_pil_image(url, W, H - 24)
         if img is None:
@@ -381,6 +396,12 @@ class DisplayManager:
         with self._lock:
             _draw_battery(draw, self._battery)
         with self._lock:
+            # If a later state change has bumped the token, the user has moved
+            # on — drop the image instead of overwriting a fresh face state.
+            if token != self._image_token:
+                logger.debug("Discarding stale image (token %d != %d)",
+                             token, self._image_token)
+                return
             self._image_override = canvas
             self._state = "IMAGE"
             self._image_expiry = time.time() + IMAGE_DISPLAY_SECONDS
