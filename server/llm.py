@@ -5,8 +5,8 @@ from typing import Iterator
 from openai import OpenAI
 from .config import (LM_STUDIO_BASE_URL, LM_STUDIO_MODEL, LLM_MAX_TOKENS,
                      LLM_MAX_HISTORY_EXCHANGES, LLM_TEMPERATURE, LLM_TIMEOUT)
-from .guardrails import (OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE, get_system_prompt,
-                         is_input_safe, is_output_safe)
+from .guardrails import (get_system_prompt, is_input_safe, is_output_safe,
+                         output_blocked_response, redirect_response)
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +97,8 @@ class LLMInterface:
         except Exception as exc:
             logger.warning("Could not reach LM Studio at %s: %s", LM_STUDIO_BASE_URL, exc)
 
-    def _build_messages(self, user_text: str, history: list | None) -> list:
-        messages = [{"role": "system", "content": get_system_prompt()}]
+    def _build_messages(self, user_text: str, history: list | None, facts: dict | None = None) -> list:
+        messages = [{"role": "system", "content": get_system_prompt(facts)}]
         if history:
             # Each exchange is 2 messages (user + assistant). Keep the most
             # recent N exchanges so the prompt never crowds out the response.
@@ -113,15 +113,16 @@ class LLMInterface:
         messages.append({"role": "user", "content": user_text})
         return messages
 
-    def respond(self, user_text: str, history: list | None = None) -> str:
+    def respond(self, user_text: str, history: list | None = None,
+                facts: dict | None = None) -> str:
         if not is_input_safe(user_text):
             logger.warning("Blocked input: %r", user_text)
-            return REDIRECT_RESPONSE
+            return redirect_response()
 
         try:
             response = self.client.chat.completions.create(
                 model=LM_STUDIO_MODEL,
-                messages=self._build_messages(user_text, history),
+                messages=self._build_messages(user_text, history, facts),
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
             )
@@ -129,37 +130,38 @@ class LLMInterface:
             reply = _strip_reasoning(_THINK_RE.sub("", raw).strip())
         except Exception as exc:
             logger.error("LM Studio request failed: %s", exc)
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         if not reply:
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         safe, reason = is_output_safe(reply)
         if not safe:
             logger.warning("Output blocked — %s", reason)
-            return OUTPUT_BLOCKED_RESPONSE
+            return output_blocked_response()
 
         logger.info("LLM reply: %r", reply)
         return reply
 
-    def respond_stream(self, user_text: str, history: list | None = None) -> Iterator[str]:
+    def respond_stream(self, user_text: str, history: list | None = None,
+                       facts: dict | None = None) -> Iterator[str]:
         """Yield sentence-sized chunks from the LLM with per-sentence safety checks."""
         if not is_input_safe(user_text):
             logger.warning("Blocked input (stream): %r", user_text)
-            yield REDIRECT_RESPONSE
+            yield redirect_response()
             return
 
         try:
             stream = self.client.chat.completions.create(
                 model=LM_STUDIO_MODEL,
-                messages=self._build_messages(user_text, history),
+                messages=self._build_messages(user_text, history, facts),
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
                 stream=True,
             )
         except Exception as exc:
             logger.error("LM Studio stream request failed: %s", exc)
-            yield OUTPUT_BLOCKED_RESPONSE
+            yield output_blocked_response()
             return
 
         buffer = ""
@@ -214,7 +216,7 @@ class LLMInterface:
                 safe, reason = is_output_safe(sentence)
                 if not safe:
                     logger.warning("Stream output blocked — %s", reason)
-                    yield OUTPUT_BLOCKED_RESPONSE
+                    yield output_blocked_response()
                     return
                 logger.info("LLM stream sentence: %r", sentence)
                 yield sentence
@@ -231,4 +233,4 @@ class LLMInterface:
                 yield remaining
             else:
                 logger.warning("Stream final output blocked — %s", reason)
-                yield OUTPUT_BLOCKED_RESPONSE
+                yield output_blocked_response()

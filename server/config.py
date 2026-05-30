@@ -48,6 +48,11 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 # container rebuilds nor was ignored by git.
 PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").lower() in ("1", "true", "yes")
 SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "server/sessions/sessions.db")
+# How long a conversation is remembered after the last message. The Pi now uses
+# a stable (hostname-based) session id, so this also governs how long memory
+# survives a reboot or a gap. Default 7 days so the bot remembers across the day
+# and overnight rather than forgetting after 30 minutes idle.
+SESSION_TIMEOUT = int(os.getenv("SESSION_TIMEOUT_HOURS", "168")) * 3600
 
 # API key authentication — set on both server and Pi; empty = disabled (dev mode)
 API_KEY = os.getenv("KIDBOT_API_KEY", "")

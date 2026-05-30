@@ -5,10 +5,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import SESSION_TIMEOUT
+
 logger = logging.getLogger(__name__)
 
 MAX_TURNS = 10       # keep last 10 back-and-forths (20 messages)
-SESSION_TIMEOUT = 1800  # drop idle sessions after 30 minutes
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Session:
     latest_reply: str = ""
     shown_image_urls: list = field(default_factory=list)  # dedup across session, not persisted
     image_pending: bool = False  # True while a background image fetch is in flight
+    facts: dict = field(default_factory=dict)  # durable things the child has shared
 
 
 class SessionStore:
@@ -40,9 +42,14 @@ class SessionStore:
                 """CREATE TABLE IF NOT EXISTS sessions (
                     session_id  TEXT PRIMARY KEY,
                     messages    TEXT NOT NULL,
-                    last_active REAL NOT NULL
+                    last_active REAL NOT NULL,
+                    facts       TEXT
                 )"""
             )
+            # Migrate DBs created before the facts column existed.
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)")]
+            if "facts" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN facts TEXT")
 
     def _db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -61,9 +68,16 @@ class SessionStore:
                 messages = json.loads(row["messages"])
             except (ValueError, TypeError):
                 messages = []
+            facts = {}
+            if "facts" in row.keys() and row["facts"]:
+                try:
+                    facts = json.loads(row["facts"])
+                except (ValueError, TypeError):
+                    facts = {}
             self._sessions[row["session_id"]] = Session(
                 messages=messages,
                 last_active=row["last_active"],
+                facts=facts,
             )
         logger.info("Loaded %d session(s) from %s", len(self._sessions), self._db_path)
 
@@ -73,12 +87,14 @@ class SessionStore:
             return
         with self._db() as conn:
             conn.execute(
-                """INSERT INTO sessions (session_id, messages, last_active)
-                   VALUES (?, ?, ?)
+                """INSERT INTO sessions (session_id, messages, last_active, facts)
+                   VALUES (?, ?, ?, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
                        messages    = excluded.messages,
-                       last_active = excluded.last_active""",
-                (session_id, json.dumps(session.messages), session.last_active),
+                       last_active = excluded.last_active,
+                       facts       = excluded.facts""",
+                (session_id, json.dumps(session.messages), session.last_active,
+                 json.dumps(session.facts)),
             )
 
     def _delete_from_db(self, session_id: str) -> None:
@@ -109,6 +125,24 @@ class SessionStore:
         if len(session.messages) > MAX_TURNS * 2:
             session.messages = session.messages[-(MAX_TURNS * 2):]
         if self._db_path:
+            self._persist_session(session_id)
+
+    def get_facts(self, session_id: str) -> dict:
+        """Durable facts the child has shared (copy)."""
+        s = self._sessions.get(session_id)
+        return dict(s.facts) if s else {}
+
+    def update_facts(self, session_id: str, new_facts: dict) -> None:
+        """Merge newly-extracted facts in; newer values overwrite older ones."""
+        if not new_facts:
+            return
+        session = self._touch(session_id)
+        changed = False
+        for key, value in new_facts.items():
+            if session.facts.get(key) != value:
+                session.facts[key] = value
+                changed = True
+        if changed and self._db_path:
             self._persist_session(session_id)
 
     def set_latest_image(self, session_id: str, url: str) -> None:

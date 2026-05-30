@@ -1,11 +1,15 @@
 import pytest
 from unittest.mock import patch
 from server.guardrails import (
+    OUTPUT_BLOCKED_RESPONSES,
     REDIRECT_RESPONSE,
+    REDIRECT_RESPONSES,
     _BASE_PROMPT,
     get_system_prompt,
     is_input_safe,
     is_output_safe,
+    output_blocked_response,
+    redirect_response,
 )
 
 
@@ -45,6 +49,20 @@ class TestGetSystemPrompt:
             prompt = get_system_prompt()
         assert "late" in prompt.lower()
 
+    def test_facts_injected_when_provided(self):
+        prompt = get_system_prompt({"pet": "they have a dog named Rex",
+                                    "age": "they are 8 years old"})
+        assert "they have a dog named Rex" in prompt
+        assert "they are 8 years old" in prompt
+        assert "remember about" in prompt
+
+    def test_no_facts_section_when_empty(self):
+        assert "remember about" not in get_system_prompt()
+        assert "remember about" not in get_system_prompt({})
+
+    def test_base_prompt_still_present_with_facts(self):
+        assert _BASE_PROMPT in get_system_prompt({"age": "they are 8 years old"})
+
     def test_called_twice_returns_same_base_content(self):
         """get_system_prompt() is not cached — each call re-evaluates time."""
         p1 = get_system_prompt()
@@ -66,6 +84,36 @@ class TestGetSystemPrompt:
 
     def test_math_mode_instructs_work_out_answer_first(self):
         assert "work out the correct answer" in _BASE_PROMPT
+
+    def test_prompt_instructs_staying_on_topic(self):
+        """Prompt must tell the model to deepen the current topic, not pivot."""
+        lowered = _BASE_PROMPT.lower()
+        assert "stay on the topic" in lowered
+        assert "do not switch the subject" in lowered
+
+    def test_prompt_encourages_emotional_attunement(self):
+        lowered = _BASE_PROMPT.lower()
+        assert "how" in lowered and "feel" in lowered
+        assert "rough day" in lowered or "acknowledge it" in lowered
+
+    def test_prompt_encourages_curiosity_about_the_child(self):
+        assert "curious about" in _BASE_PROMPT.lower()
+        assert "their day" in _BASE_PROMPT.lower()
+
+    def test_prompt_encourages_callbacks_to_earlier(self):
+        assert "earlier in the conversation" in _BASE_PROMPT.lower()
+
+    def test_prompt_uses_neutral_pronouns(self):
+        import re
+        assert re.search(r"\b(he|him|his)\b", _BASE_PROMPT, re.IGNORECASE) is None
+
+    def test_prompt_does_not_treat_favourites_as_redirect_bait(self):
+        """The old phrasing pivoted to space/dinosaurs after finishing; ensure
+        the favourites are framed as draw-on-when-raised, not steer-toward."""
+        lowered = _BASE_PROMPT.lower()
+        assert "never steer toward them while" in lowered
+        # The bare "Favourite topics:" bullet that encouraged pivoting is gone.
+        assert "favourite topics: engineering" not in lowered
 
 
 # --- is_input_safe ---
@@ -197,3 +245,18 @@ class TestIsOutputSafe:
         # The canned redirect text must never be blocked by the output filter
         ok, reason = is_output_safe(REDIRECT_RESPONSE)
         assert ok is True, f"REDIRECT_RESPONSE was blocked: {reason}"
+
+    def test_all_fallback_pool_entries_are_safe(self):
+        # Every varied fallback must itself pass the output filter.
+        for text in (*REDIRECT_RESPONSES, *OUTPUT_BLOCKED_RESPONSES):
+            ok, reason = is_output_safe(text)
+            assert ok is True, f"fallback blocked: {text!r} ({reason})"
+
+    def test_fallback_pools_have_variety(self):
+        assert len(set(REDIRECT_RESPONSES)) >= 3
+        assert len(set(OUTPUT_BLOCKED_RESPONSES)) >= 3
+
+    def test_pickers_return_pool_members(self):
+        for _ in range(20):
+            assert redirect_response() in REDIRECT_RESPONSES
+            assert output_blocked_response() in OUTPUT_BLOCKED_RESPONSES

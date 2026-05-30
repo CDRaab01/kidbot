@@ -260,6 +260,7 @@ curl http://localhost:1234/v1/models
 # Optional — create a .env file or export in your shell:
 export KIDBOT_API_KEY="your-secret-key"
 export PERSIST_SESSIONS=1
+export SESSION_TIMEOUT_HOURS=168       # 7 days (default); how long memory survives idle
 export LOG_FILE=/var/log/kidbot/server.log
 export CHILD_NAME=YourChild
 ```
@@ -648,7 +649,7 @@ The system prompt strictly instructs the model to avoid violence, adult content,
 ### Data & Privacy
 
 - No audio is stored permanently. WAV files are written to `server/temp/` and deleted immediately after transcription.
-- Conversation history is held in memory (or optionally in a local SQLite file). Nothing is sent to any external service except Wikipedia image thumbnails.
+- Conversation history is held in memory (or optionally in a local SQLite file). When `PERSIST_SESSIONS=1`, the same SQLite row also stores a small `facts` dict — durable things the child volunteered (age, pet, favourites, fears, nickname) that the bot uses to feel more personal. To inspect or wipe, see *Long-term memory* in §12 Troubleshooting. The image-search HTTPS calls and (optionally) the LLM-judged conversation smoke test are the only outbound traffic.
 - The Whisper STT, Gemma LLM, and Kokoro TTS all run locally — no API keys, no cloud.
 
 ---
@@ -758,8 +759,9 @@ journalctl -u kidbot -f
 # See how many sessions are active (no direct endpoint — check logs)
 grep "New session" /var/log/kidbot/server.log | wc -l
 
-# SQLite inspection (if PERSIST_SESSIONS=1)
-sqlite3 server/sessions.db "SELECT session_id, last_active FROM sessions;"
+# SQLite inspection (if PERSIST_SESSIONS=1; default path in 0.5+ is
+# server/sessions/sessions.db, inside the mounted Docker volume)
+sqlite3 server/sessions/sessions.db "SELECT session_id, last_active, facts FROM sessions;"
 ```
 
 ---
@@ -928,7 +930,21 @@ The API enforces 5 requests/minute on chat endpoints. If testing rapidly, add de
 
 ### Session history lost after restart
 
-Set `PERSIST_SESSIONS=1` to enable SQLite persistence. Sessions survive restarts and are cleaned up after 30 minutes of inactivity.
+Set `PERSIST_SESSIONS=1` to enable SQLite persistence. The Pi derives a stable session id from its hostname, so the same conversation is restored across reboots. Sessions are cleaned up after `SESSION_TIMEOUT_HOURS` of inactivity (default **168** — 7 days; pre-0.5 deployments used a 30-minute default that wiped memory after lunch).
+
+```bash
+# Shorter retention if you want the bot to "forget" sooner:
+export SESSION_TIMEOUT_HOURS=24
+```
+
+### Long-term memory (durable facts)
+
+Beyond the rolling conversation history, the bot remembers a small set of durable facts the child mentions in their own words (age, pet name, fear, favourites, nickname). These are extracted with simple pattern matching — no extra LLM call — and persisted alongside the session in SQLite. Newer values overwrite older ones (so a new age replaces the old). To inspect or clear them:
+
+```bash
+sqlite3 server/sessions/sessions.db "SELECT session_id, facts FROM sessions;"
+sqlite3 server/sessions/sessions.db "UPDATE sessions SET facts='{}' WHERE session_id='kidbot';"
+```
 
 ---
 

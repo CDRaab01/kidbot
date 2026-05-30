@@ -16,8 +16,9 @@
    - 3.4 [Text-to-Speech (TTS)](#34-text-to-speech-tts)
    - 3.5 [Guardrails](#35-guardrails)
    - 3.6 [Session Store](#36-session-store)
-   - 3.7 [Image Search](#37-image-search)
-   - 3.8 [Configuration](#38-server-configuration)
+   - 3.7 [Long-term Profile Memory](#37-long-term-profile-memory)
+   - 3.8 [Image Search](#38-image-search)
+   - 3.9 [Configuration](#39-server-configuration)
 4. [Pi Client Software](#4-pi-client-software)
    - 4.1 [Entry Point & State Machine](#41-entry-point--state-machine)
    - 4.2 [Server Client](#42-server-client)
@@ -52,7 +53,8 @@ kidbot/
 │   ├── llm.py                  # LLM interface (LM Studio via OpenAI SDK)
 │   ├── tts.py                  # Text-to-Speech (Kokoro ONNX)
 │   ├── guardrails.py           # Content safety + system prompt
-│   ├── session.py              # Conversation history + SQLite persistence
+│   ├── session.py              # Conversation history + facts + SQLite persistence
+│   ├── memory.py               # Regex-extracted durable facts (age, pet, favourites, ...)
 │   ├── image_search.py         # 5-source parallel image search
 │   └── models/                 # Model files (not in git)
 │       ├── kokoro-v1.0.onnx
@@ -76,7 +78,8 @@ kidbot/
 ├── scripts/                    # CLI tools and test harnesses
 │   ├── keyboard_test.py        # Keyboard-driven Pi client (no physical buttons needed)
 │   ├── send_text.py            # Send text to server and print reply
-│   └── test_images.py         # Image search relevance tester
+│   ├── test_images.py          # Image search relevance tester (deploy smoke)
+│   └── test_conversation.py    # Multi-turn behavioural smoke (LLM-judged)
 │
 ├── test_gui.py                 # Desktop test console (tkinter)
 │
@@ -371,9 +374,14 @@ get_system_prompt()
 `_BASE_PROMPT` (77 lines) covers:
 - Tone and language rules (smart 7–10 year old, natural speech, no lists/bullets)
 - Safety absolutes (violence, adult content, personal info)
-- YourChild's favourite topics (engineering, space, Spider-Man, science)
+- Emotional attunement (notice excited/sad/bored/tired and acknowledge it before steering anywhere)
+- Genuine curiosity about the child as a person (their day, what they've built/played); callbacks to things said earlier in the conversation
+- Stay-on-topic rule — deepen the current subject rather than pivoting to a list of unrelated favourites
+- Favourites (engineering, space, Spider-Man, science) framed as things to draw on **when the child raises them**, never to steer toward
+- Neutral pronouns throughout (they/them)
 - Special modes: **Story**, **Quiz**, **Joke/Riddle**, **Song/Poem**, **Math**
 - Image tagging rules (explicit request only)
+- When called as `get_system_prompt(facts)` with a non-empty dict, appends a "Here's what you remember about CHILD" block (see §3.7)
 
 #### Content Filtering
 
@@ -396,6 +404,8 @@ is_output_safe(text)
               ← (True, "") if all pass
 ```
 
+**Fallback variety.** When the input or output filter trips, `llm.py` doesn't return a single fixed string — it calls `redirect_response()` / `output_blocked_response()`, which pick from small warm pools (`REDIRECT_RESPONSES` / `OUTPUT_BLOCKED_RESPONSES`) at random. Every pool entry is itself checked against `is_output_safe` so the fallback can never be blocked by the very filter that triggered it.
+
 ---
 
 ### 3.6 Session Store
@@ -413,10 +423,11 @@ is_output_safe(text)
 │    last_active:       float (unix timestamp)             │
 │    latest_image_url:  str   (one-shot, cleared on read)  │
 │    latest_reply:      str   (one-shot, cleared on read)  │
+│    facts:             dict  (durable; persisted)         │
 └─────────────────────────────────────────────────────────┘
 
 get_history(session_id)
-      ├── _purge_expired()   ← removes sessions idle > 30 min
+      ├── _purge_expired()   ← removes sessions idle > SESSION_TIMEOUT
       ├── create Session if new
       └── return copy of messages[]
 
@@ -425,19 +436,58 @@ add_exchange(session_id, user_text, assistant_text)
       ├── trim to last MAX_TURNS * 2 = 20 messages
       └── persist to SQLite if db_path configured
 
+get_facts(session_id) / update_facts(session_id, new_facts)
+      ├── newer values overwrite older ones (e.g. a new age replaces old)
+      └── persisted with the session row when db_path is configured
+
 SQLite schema:
   CREATE TABLE sessions (
       session_id  TEXT PRIMARY KEY,
       messages    TEXT NOT NULL,   -- JSON array
-      last_active REAL NOT NULL
+      last_active REAL NOT NULL,
+      facts       TEXT             -- JSON object (added 0.5.x; migrated in
+                                   -- place via PRAGMA table_info + ALTER for
+                                   -- pre-existing DBs)
   )
 ```
 
-`latest_image_url` and `latest_reply` are **not** persisted to SQLite — they are transient, cleared once polled.
+`latest_image_url` and `latest_reply` are **not** persisted to SQLite — they are transient, cleared once polled. `facts` **is** persisted and is the basis of long-term profile memory (see 3.7).
+
+**Retention:** `SESSION_TIMEOUT` defaults to **7 days** (env `SESSION_TIMEOUT_HOURS`, was 30 min in pre-0.5). Combined with the Pi's stable hostname-based session id (`pi_client.client._stable_session_id`), this means a reboot, school day, or overnight gap no longer wipes the conversation.
 
 ---
 
-### 3.7 Image Search
+### 3.7 Long-term Profile Memory
+
+**File:** `server/memory.py`
+
+```
+extract_facts(text) → dict[str, str]
+      │
+      ├── deterministic regex over the child's own utterance — no extra
+      │   LLM call (so no added latency on the slow local model)
+      ├── categories: age, pet (with optional name), fear, favourite X,
+      │               name/nickname
+      ├── values longer than _MAX_VALUE_LEN truncated; entries that would
+      │   trip is_output_safe are dropped
+      └── stable category keys → newer values overwrite older ones
+
+Pipeline wiring (server/main.py):
+  - facts = _sessions.get_facts(session_id)
+  - _llm.respond(text, history, facts) / .respond_stream(...)
+  - after each turn: _sessions.update_facts(session_id, extract_facts(text))
+
+Prompt injection (server/guardrails.get_system_prompt(facts)):
+  - appends a "Here's what you remember about CHILD" block when facts is
+    non-empty, with explicit guidance to weave them in naturally and never
+    recite them as a list
+```
+
+The companion isn't *asking* questions to learn — it's just listening. A child saying "I have a dog named Rex" once gets remembered across reboots and days.
+
+---
+
+### 3.8 Image Search
 
 **File:** `server/image_search.py`
 
@@ -461,7 +511,7 @@ Five sources are searched in parallel and the highest-priority result is returne
 
 ---
 
-### 3.8 Server Configuration
+### 3.9 Server Configuration
 
 **File:** `server/config.py`
 
@@ -1020,17 +1070,22 @@ Pi (after audio playback):
 
 ```
 Pi startup
-  └── ServerClient.__init__() → session_id = uuid4()   [fixed for process lifetime]
+  └── ServerClient.__init__() → session_id = _stable_session_id()
+        └── socket.gethostname() — same id across reboots so the server can
+            keep remembering this device's conversation (falls back to a
+            random "pi-<uuid>" only if the hostname can't be read)
 
 First chat
   └── _sessions._touch(session_id) → new Session()
 
 Each turn
-  └── add_exchange(session_id, user_text, reply_text)
-        └── trim to 20 messages (10 turns)
-        └── if PERSIST_SESSIONS: write to SQLite
+  ├── add_exchange(session_id, user_text, reply_text)
+  │     └── trim to 20 messages (10 turns)
+  │     └── if PERSIST_SESSIONS: write to SQLite (messages + facts)
+  └── update_facts(session_id, extract_facts(user_text))
+        └── newer fact values overwrite older ones (e.g. a new age)
 
-30 min idle
+SESSION_TIMEOUT idle  (default 7 days, env SESSION_TIMEOUT_HOURS)
   └── _purge_expired() → del session from memory + DB
 
 DELETE /session/{id}
@@ -1038,8 +1093,9 @@ DELETE /session/{id}
 
 Server restart (with PERSIST_SESSIONS=1)
   └── SessionStore.__init__() → _load_from_db()
-        └── discard sessions older than SESSION_TIMEOUT
-        └── restore recent sessions to _sessions dict
+        ├── auto-migrates legacy DBs missing the facts column
+        ├── discard sessions older than SESSION_TIMEOUT
+        └── restore recent sessions (messages + facts) to _sessions dict
 ```
 
 ---
@@ -1222,44 +1278,64 @@ Background threads (daemon):
 
 ## 9. Test Suite
 
-**Run:** `python -m pytest tests/ -v`
+**Run:** `python -m pytest tests/ -v`  (current totals: ~440 tests, 10 skipped — need `$DISPLAY`)
 
 ```
 tests/
-├── conftest.py         Stubs: openai, faster_whisper, kokoro_onnx,
-│                              soundfile, sounddevice, PIL, tkinter
+├── conftest.py            Shared stubs: openai, faster_whisper, kokoro_onnx,
+│                          soundfile, sounddevice, PIL, tkinter, pyaudio,
+│                          RPi.GPIO
 │
-├── test_api.py         55 tests — all HTTP endpoints, rate limiting,
-│                       auth, streaming, session management, image URL
+├── server/conftest.py     Autouse fixture: clears the process-global
+│                          SessionStore between tests so state can't leak
 │
-├── test_guardrails.py  48 tests — keyword blocking, output length,
-│                       personal info patterns, system prompt content
+├── server/
+│   ├── test_api.py            HTTP endpoints, rate limiting, auth, streaming,
+│   │                          session management, image URL plumbing
+│   ├── test_guardrails.py     Keyword filters, personal-info patterns,
+│   │                          system-prompt content (stay-on-topic, attunement,
+│   │                          neutral pronouns), random fallback pools and
+│   │                          pickers, fact-injection in get_system_prompt
+│   ├── test_llm.py            respond() / respond_stream(), sentence chunking,
+│   │                          safety integration, LM Studio client timeout
+│   ├── test_session.py        In-memory + SQLite persistence, trimming, expiry,
+│   │                          image/reply one-shot fields, facts CRUD, legacy
+│   │                          DB migration (no `facts` column)
+│   ├── test_memory.py         extract_facts() — age, pet, fear, favourite X,
+│   │                          nickname; unsafe values dropped
+│   ├── test_stt.py            Transcription output and kwargs
+│   ├── test_tts.py            clean_for_speech(), synthesis, ffmpeg invocation,
+│   │                          temp file cleanup, available_voices() caching
+│   ├── test_image_search.py   5-source priority/fallback logic, SSRF guard
+│   ├── test_main_helpers.py   _safe_header, _extract_image, fallback term,
+│   │                          fact wiring, non-streaming threadpool offload,
+│   │                          streaming TTS-failure resilience
+│   ├── test_config.py         SERVER_HOST/PORT and SESSION_TIMEOUT_HOURS
+│   │                          env overrides
+│   ├── test_smoke_images.py   Rate-limit retry in scripts/test_images.py
+│   ├── test_smoke_conversation.py
+│   │                          Rate-limit retry, judge verdict parsing,
+│   │                          run() pass/fail counting, probe shape
+│   └── test_wait_for_server.py
+│                              Health-poll loop in scripts/wait_for_server.py
 │
-├── test_llm.py         14 tests — respond(), respond_stream(),
-│                       sentence chunking, safety integration
-│
-├── test_session.py     20 tests — in-memory + SQLite persistence,
-│                       trimming, expiry, image/reply one-shot fields
-│
-├── test_stt.py          6 tests — transcription output, kwargs
-│
-├── test_tts.py         12 tests — clean_for_speech(), synthesis,
-│                       ffmpeg invocation, temp file cleanup
-│
-├── test_image_search.py  46 tests — 5-source search, priority/fallback logic (all sources mocked)
-│
-├── test_volume.py       30 tests — _get_volume parsing, _set_volume args,
-│                        VolumeRocker._adjust (clamp, no-op, on_change),
-│                        GPIO pin setup and cleanup
-│
-├── test_display_volume.py 10 tests — show_volume(), overlay expiry,
-│                        _draw_volume_overlay() pixel/call assertions
-│
-└── test_gui_logic.py   17 tests — mic device filtering, WAV writing,
-                        GUI state machine (tkinter skipped headless)
+└── pi/
+    ├── test_client.py         Stable hostname session id, retry, polling,
+    │                          streamed-response release on early stop
+    ├── test_audio.py          Mic discovery, playback, blip + chime timeouts
+    ├── test_button.py         GPIO setup, edge dispatch, LED, cleanup
+    ├── test_volume.py         _get_volume parsing, VolumeRocker._adjust
+    │                          (clamp, no-op, on_change), GPIO setup/cleanup
+    ├── test_main.py           PTT busy-lock robustness, _poll_for_image
+    ├── test_display_volume.py show_volume(), overlay expiry, headless skip
+    └── test_gui_logic.py      Mic filtering, WAV writing, GUI state machine
+                               (tkinter skipped headless)
 ```
 
-**CI:** GitHub Actions runs 3 parallel test jobs on every PR to `main` using Python 3.11 (Ubuntu latest). On push to `main`, tests must pass before the deploy job runs, followed by a smoke test on the live server.
+**CI:** GitHub Actions runs 3 parallel test jobs on every PR to `main` using Python 3.11 (Ubuntu latest). On push to `main`, tests must pass before the deploy job runs, followed by a two-step smoke check on the live server:
+
+1. **`scripts/test_images.py --no-vision`** — image relevance / no-URL gate.
+2. **`scripts/test_conversation.py`** *(advisory)* — multi-turn `/chat_text` conversations graded by an LLM judge (auto-detected from LM Studio) for on-topic flow and fact recall. Exits 0 on a NO verdict by default so LLM stochasticity doesn't flap the deploy gate; pass `--strict` to make a failed verdict fail the build. This is the only check that can verify the prompt-level behaviour unit tests can't (the bot staying on-topic, weaving remembered facts in naturally).
 
 ---
 

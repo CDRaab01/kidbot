@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from server.guardrails import OUTPUT_BLOCKED_RESPONSE, REDIRECT_RESPONSE
+from server.guardrails import (OUTPUT_BLOCKED_RESPONSE, OUTPUT_BLOCKED_RESPONSES,
+                               REDIRECT_RESPONSE, REDIRECT_RESPONSES)
 from server.llm import LLMInterface
 
 
@@ -48,25 +49,25 @@ class TestLLMInterface:
         mock_openai.chat.completions.create.reset_mock()
         result = llm.respond("kill everyone")
         mock_openai.chat.completions.create.assert_not_called()
-        assert result == REDIRECT_RESPONSE
+        assert result in REDIRECT_RESPONSES
 
     def test_blocked_output_returns_blocked_response(self, mock_openai):
         mock_openai.chat.completions.create.return_value = _make_response("I will kill you.")
         llm = LLMInterface()
         result = llm.respond("Tell me something")
-        assert result == OUTPUT_BLOCKED_RESPONSE
+        assert result in OUTPUT_BLOCKED_RESPONSES
 
     def test_empty_reply_returns_blocked_response(self, mock_openai):
         mock_openai.chat.completions.create.return_value = _make_response("   ")
         llm = LLMInterface()
         result = llm.respond("Hello")
-        assert result == OUTPUT_BLOCKED_RESPONSE
+        assert result in OUTPUT_BLOCKED_RESPONSES
 
     def test_api_exception_returns_blocked_response(self, mock_openai):
         mock_openai.chat.completions.create.side_effect = Exception("connection refused")
         llm = LLMInterface()
         result = llm.respond("Hello")
-        assert result == OUTPUT_BLOCKED_RESPONSE
+        assert result in OUTPUT_BLOCKED_RESPONSES
 
     def test_history_is_passed_to_api(self, mock_openai):
         mock_openai.chat.completions.create.return_value = _make_response("Sure thing!")
@@ -123,7 +124,7 @@ class TestLLMInterfaceStream:
         llm = LLMInterface()
         mock_openai.chat.completions.create.reset_mock()
         sentences = list(llm.respond_stream("kill everyone"))
-        assert sentences == [REDIRECT_RESPONSE]
+        assert len(sentences) == 1 and sentences[0] in REDIRECT_RESPONSES
         mock_openai.chat.completions.create.assert_not_called()
 
     def test_stream_unsafe_output_stops_and_yields_blocked(self, mock_openai):
@@ -132,8 +133,8 @@ class TestLLMInterfaceStream:
         )
         llm = LLMInterface()
         sentences = list(llm.respond_stream("hi"))
-        assert OUTPUT_BLOCKED_RESPONSE in sentences
-        assert sentences[-1] == OUTPUT_BLOCKED_RESPONSE
+        assert any(x in OUTPUT_BLOCKED_RESPONSES for x in sentences)
+        assert sentences[-1] in OUTPUT_BLOCKED_RESPONSES
 
     def test_stream_short_fragment_merged_with_next(self, mock_openai):
         # "Hi." is only 3 chars — should be merged, not yielded alone
@@ -165,7 +166,7 @@ class TestLLMInterfaceStream:
         mock_openai.chat.completions.create.side_effect = Exception("timeout")
         llm = LLMInterface()
         sentences = list(llm.respond_stream("hello"))
-        assert sentences == [OUTPUT_BLOCKED_RESPONSE]
+        assert len(sentences) == 1 and sentences[0] in OUTPUT_BLOCKED_RESPONSES
 
     def test_stream_skips_none_delta_content(self, mock_openai):
         # OpenAI streams sometimes emit chunks with None content (role-only chunks)
