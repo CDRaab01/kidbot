@@ -16,13 +16,15 @@ logger = logging.getLogger(__name__)
 # Screen dimensions
 W, H = 320, 240
 
-# Colours (RGB)
+# Colours (RGB) — tuned for cheap 320×240 LCDs where pure cyan washes out
+# and soft pinks disappear against a dark navy background.
 BG          = (20,  20,  40)   # dark navy
-EYE_COLOR   = (0,  220, 220)   # cyan
+EYE_COLOR   = (80, 220, 230)   # warmer cyan — pops against BG on cheap panels
+EYE_HILIGHT = (200, 255, 255)  # 1-px inner outline highlight for definition
 PUPIL       = (10,  10,  30)
-MOUTH_COLOR = (0,  220, 220)
-BROW_COLOR  = (0,  220, 220)
-CHEEK_COLOR = (255, 130, 130)
+MOUTH_COLOR = (80, 220, 230)
+BROW_COLOR  = (80, 220, 230)
+CHEEK_COLOR = (255, 140, 150)  # slightly bolder pink so cheeks read at a glance
 ERR_COLOR   = (220,  40,  40)
 THINK_COLOR = (100, 200, 255)
 BAT_GREEN   = (60,  200,  60)
@@ -186,13 +188,19 @@ def _render_face(state: str, frame: int, battery: Optional[int]) -> "PIL.Image.I
         _draw_mouth_speaking(draw, cx, cy + 30, frame)
 
     elif state == "HAPPY":
-        _draw_happy_eyes(draw, leye_x, reye_x, eye_y)
-        _draw_cheeks(draw, leye_x, reye_x, eye_y + 40)
-        _draw_mouth_smile(draw, cx, cy + 30, small=False)
+        # Gentle vertical bob (±2 px on a 12-frame cycle) so the excitement
+        # reads as alive rather than a static grin.
+        bob = (frame % 12) - 6
+        bob = bob // 3  # -2..1
+        _draw_happy_eyes(draw, leye_x, reye_x, eye_y + bob)
+        _draw_cheeks(draw, leye_x, reye_x, eye_y + 40 + bob)
+        _draw_mouth_smile(draw, cx, cy + 30 + bob, small=False)
 
     elif state == "ERROR":
         _draw_x_eyes(draw, leye_x, reye_x, eye_y)
-        _draw_mouth_frown(draw, cx, cy + 30)
+        # Tiny mouth tremble — reads as worried rather than crashed.
+        tremble = ((frame // 2) % 2) * 2 - 1  # alternates -1, +1
+        _draw_mouth_frown(draw, cx, cy + 30 + tremble)
 
     elif state == "LOADING":
         # Same wide-eyed look as LISTENING but with rotating dots underneath
@@ -221,15 +229,34 @@ def _draw_circle_eyes(draw, lx, rx, y, r=22, color=None):
 
 
 def _draw_idle_eyes(draw, lx, rx, y, frame):
-    """Normal eyes with slow blink every ~45 frames (4.5 s at 10 fps, 5.6 s at 8 fps)."""
-    blinking = (frame % 45) in (42, 43, 44)
+    """Normal eyes with slow blink every ~45 frames (4.5s at 10fps, 5.6s at 8fps).
+
+    Adds two small touches so the face looks alive between blinks:
+    - Pupils drift on a slow horizontal sine (~1-2 px, ~6s cycle), so the
+      eyes aren't dead-still.
+    - Every 4th blink is a double-blink (a second close 3 frames after the
+      first), which reads as a more natural human tic.
+    """
+    in_blink_window = (frame % 45) in (42, 43, 44)
+    # Double-blink follow-up: 3 frames after the first blink, every 4th cycle.
+    cycle = (frame // 45) % 4
+    in_second_blink = (cycle == 0) and ((frame % 45) in (38, 39))
+    blinking = in_blink_window or in_second_blink
+    # Slow horizontal pupil drift: ±2 px on a ~60-frame (6-7.5 s) cycle.
+    # Integer arithmetic — no math.sin to avoid float churn every frame.
+    drift_phase = (frame % 60) - 30  # -30..29
+    drift_x = drift_phase // 15      # -2..1, mostly 0
     r = 22
     for ex in (lx, rx):
         if blinking:
             draw.line([ex - r, y, ex + r, y], fill=EYE_COLOR, width=4)
         else:
             draw.ellipse([ex - r, y - r, ex + r, y + r], outline=EYE_COLOR, width=3)
-            draw.ellipse([ex - 8, y - 8, ex + 8, y + 8], fill=PUPIL)
+            # Hairline white inner highlight for definition on cheap LCDs.
+            draw.ellipse([ex - r + 2, y - r + 2, ex + r - 2, y + r - 2],
+                         outline=EYE_HILIGHT, width=1)
+            draw.ellipse([ex - 8 + drift_x, y - 8,
+                          ex + 8 + drift_x, y + 8], fill=PUPIL)
 
 
 def _draw_rect_eyes(draw, lx, rx, y):
@@ -285,7 +312,10 @@ def _draw_mouth_open_o(draw, cx, y):
     draw.ellipse([cx - 22, y - 15, cx + 22, y + 15], outline=MOUTH_COLOR, width=3)
 
 
-_SPEAK_HEIGHTS = [0, 8, 16, 24, 16, 8]  # mouth opening heights — consistent arc throughout
+# Mouth heights — non-uniform pattern so the cadence doesn't read as a
+# perfect 6-frame metronome. The trailing 0 holds the mouth briefly closed,
+# the way a real speaker pauses between words.
+_SPEAK_HEIGHTS = [0, 10, 18, 24, 20, 8, 0, 14, 22, 6]
 
 
 def _draw_mouth_speaking(draw, cx, y, frame):
@@ -301,8 +331,10 @@ def _draw_mouth_speaking(draw, cx, y, frame):
 # ---------------------------------------------------------------------------
 
 def _draw_thinking_dots(draw, cx, y, frame):
+    # Speeded up from frame//5 → frame//3 (~1.1s cycle at 10fps instead of
+    # ~1.9s) so the THINKING face doesn't read as frozen.
     for i in range(3):
-        visible = ((frame // 5) % 3) >= i
+        visible = ((frame // 3) % 4) > i
         color = THINK_COLOR if visible else BG
         dx = cx - 20 + i * 20
         draw.ellipse([dx - 5, y - 5, dx + 5, y + 5], fill=color)

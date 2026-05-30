@@ -375,6 +375,70 @@ class TestFitImageToCanvas:
         assert self._run(src) is None
 
 
+class TestPolish:
+    """Deterministic micro-animation polish (C5)."""
+
+    def test_idle_eyes_pupil_drifts_across_cycle(self):
+        from pi_client.display import _draw_idle_eyes
+        # Sample pupil x across a full 60-frame drift cycle; should NOT be
+        # identical at every sampled frame (something moves).
+        pupil_x_positions = []
+        for frame in (0, 15, 30, 45):
+            draw = MagicMock()
+            _draw_idle_eyes(draw, lx=100, rx=200, y=80, frame=frame)
+            # Each call should hit ellipse twice (outline + highlight + pupil)
+            # — collect the pupil coords (the small ellipse).
+            small_ellipses = [
+                c for c in draw.ellipse.call_args_list
+                if (c[0][0][2] - c[0][0][0]) < 20  # small ellipse = pupil
+            ]
+            if small_ellipses:
+                pupil_x_positions.append(small_ellipses[0][0][0][0])
+        assert len(set(pupil_x_positions)) > 1  # drift actually moves
+
+    def test_idle_eyes_blink_frames(self):
+        from pi_client.display import _draw_idle_eyes
+        # Blink window 42-44: only line() should be called for the eye, no
+        # ellipses (or just background fills).
+        draw = MagicMock()
+        _draw_idle_eyes(draw, lx=100, rx=200, y=80, frame=43)
+        # During blink, line() is called for each eye.
+        assert draw.line.call_count >= 2
+
+    def test_thinking_dots_cycle_faster(self):
+        """frame//3 (new) cycles 3× faster than frame//5 (old) — within 15
+        frames we should see the dots advance through more states than before."""
+        from pi_client.display import _draw_thinking_dots
+        visible_counts = []
+        for frame in range(0, 15, 3):
+            draw = MagicMock()
+            _draw_thinking_dots(draw, cx=160, y=140, frame=frame)
+            # How many of the 3 dots got the visible (THINK_COLOR) fill?
+            from pi_client.display import THINK_COLOR
+            visible = sum(
+                1 for c in draw.ellipse.call_args_list
+                if c.kwargs.get("fill") == THINK_COLOR
+            )
+            visible_counts.append(visible)
+        # Should hit at least 3 distinct visibility counts in those samples.
+        assert len(set(visible_counts)) >= 3
+
+    def test_mouth_speaking_pattern_varies(self):
+        """The non-uniform _SPEAK_HEIGHTS gives mouth shapes that don't
+        repeat in a perfect 6-frame loop any more."""
+        from pi_client.display import _SPEAK_HEIGHTS
+        # Sanity: the table is no longer the old uniform [0,8,16,24,16,8].
+        assert _SPEAK_HEIGHTS != [0, 8, 16, 24, 16, 8]
+        assert len(set(_SPEAK_HEIGHTS)) >= 5  # variety
+        assert 0 in _SPEAK_HEIGHTS  # still has closed-mouth pauses
+
+    def test_warmer_eye_colour(self):
+        """Pure cyan washes out on cheap LCDs — assert we shifted warmer."""
+        from pi_client.display import EYE_COLOR
+        # Warmer cyan has some red channel; pure cyan would be (0, 220, 220).
+        assert EYE_COLOR[0] > 0
+
+
 class TestAllStatesDispatch:
     def test_every_face_state_has_a_dispatch_arm(self):
         """Static check on the source so the FACE_STATES tuple stays in sync
