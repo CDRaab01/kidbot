@@ -1,0 +1,215 @@
+"""Tests for DisplayManager state machine + image lifecycle.
+
+Locked-in invariants for current behaviour (the safety net before the
+face/image work begins). Pillow is stubbed by the shared conftest, so we
+mock PIL and _render_face anywhere a real Image would be needed.
+"""
+import sys
+import time
+from unittest.mock import MagicMock, patch
+
+
+def _make_display():
+    """Headless DisplayManager with render/battery threads suppressed."""
+    import pi_client.display as disp_mod
+    with patch.object(disp_mod, "_init_device", return_value=None), \
+         patch("threading.Thread"):
+        from pi_client.display import DisplayManager
+        dm = DisplayManager()
+    return dm, disp_mod
+
+
+# ---------------------------------------------------------------------------
+# set_state()
+# ---------------------------------------------------------------------------
+
+class TestSetState:
+    def test_unknown_state_is_ignored(self):
+        dm, _ = _make_display()
+        dm._state = "IDLE"
+        dm.set_state("BOGUS")
+        assert dm._state == "IDLE"
+
+    def test_transition_to_known_state(self):
+        dm, _ = _make_display()
+        for state in ("LISTENING", "THINKING", "SPEAKING", "HAPPY", "ERROR", "IDLE"):
+            dm.set_state(state)
+            assert dm._state == state
+
+    def test_transitioning_off_image_clears_override(self):
+        """A stale picture must never survive a state change away from IMAGE."""
+        dm, _ = _make_display()
+        dm._image_override = object()  # sentinel — real PIL image not needed
+        dm._state = "IMAGE"
+        dm.set_state("LISTENING")
+        assert dm._image_override is None
+
+    def test_transition_to_image_keeps_override(self):
+        dm, _ = _make_display()
+        canvas = object()  # sentinel
+        dm._image_override = canvas
+        dm.set_state("IMAGE")
+        assert dm._image_override is canvas
+
+
+# ---------------------------------------------------------------------------
+# _animate() one-tick behaviour — drives a single iteration via patched sleep
+# ---------------------------------------------------------------------------
+
+def _run_one_tick(dm, disp_mod):
+    """Drive _animate for exactly one iteration with a real device attached."""
+    dm._device = MagicMock()
+
+    def stop_after_first(_):
+        dm._running = False
+
+    # Patch _render_face so we never touch real PIL, and ImageDraw used by
+    # the volume-overlay branch (only fires when _vol_pct is not None).
+    with patch.object(disp_mod, "_render_face", return_value=MagicMock()) as r, \
+         patch("time.sleep", side_effect=stop_after_first):
+        dm._running = True
+        dm._animate()
+    return r
+
+
+class TestAnimateImageAutoRevert:
+    def test_expired_image_state_reverts_to_idle(self):
+        dm, disp_mod = _make_display()
+        dm._state = "IMAGE"
+        dm._image_override = MagicMock()  # has .copy()
+        dm._image_expiry = time.time() - 1  # already expired
+        _run_one_tick(dm, disp_mod)
+        assert dm._state == "IDLE"
+        assert dm._image_override is None
+
+    def test_unexpired_image_state_keeps_state(self):
+        dm, disp_mod = _make_display()
+        dm._state = "IMAGE"
+        dm._image_override = MagicMock()  # supports .copy()
+        dm._image_expiry = time.time() + 30
+        with patch.object(disp_mod, "_render_face") as render:
+            _run_one_tick(dm, disp_mod)
+        # Override path: _render_face isn't called when override present.
+        render.assert_not_called()
+        assert dm._state == "IMAGE"
+
+    def test_non_image_state_calls_render_face(self):
+        dm, disp_mod = _make_display()
+        dm._state = "SPEAKING"
+        render = _run_one_tick(dm, disp_mod)
+        render.assert_called_once()
+        called_state = render.call_args[0][0]
+        assert called_state == "SPEAKING"
+
+
+# ---------------------------------------------------------------------------
+# _animate() snapshot is taken under the lock
+# ---------------------------------------------------------------------------
+
+class TestRenderSnapshot:
+    def test_state_battery_volume_read_atomically(self):
+        """A single render tick must use one consistent snapshot, not a mix."""
+        dm, disp_mod = _make_display()
+        dm._state = "IDLE"
+        dm._battery = 80
+        dm._vol_pct = None
+        dm._device = MagicMock()
+
+        seen: list[tuple] = []
+
+        def fake_render(state, frame, battery):
+            seen.append((state, battery))
+            return MagicMock()
+
+        def stop_after_first(_):
+            dm._running = False
+
+        with patch.object(disp_mod, "_render_face", side_effect=fake_render), \
+             patch("time.sleep", side_effect=stop_after_first):
+            dm._running = True
+            dm._animate()
+
+        assert seen == [("IDLE", 80)]
+
+
+# ---------------------------------------------------------------------------
+# _load_image() current behaviour
+# ---------------------------------------------------------------------------
+
+class TestLoadImage:
+    def test_fetch_failure_returns_silently(self):
+        """Today, a failed fetch is silent. C3 will change this to IMAGE_MISSING."""
+        dm, disp_mod = _make_display()
+        dm._state = "SPEAKING"
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=None):
+            dm._load_image("http://x/y.jpg")
+        assert dm._state == "SPEAKING"
+        assert dm._image_override is None
+
+    def test_successful_fetch_sets_image_state_and_expiry(self):
+        dm, disp_mod = _make_display()
+        before = time.time()
+        # Fake PIL image with the attrs _load_image reads.
+        fake_img = MagicMock(width=200, height=100)
+        # Replace PIL.Image used via __import__("PIL.Image", fromlist=["Image"]).new
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=fake_img), \
+             patch.object(disp_mod, "_draw_battery"), \
+             patch.dict(sys.modules,
+                        {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
+                         "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
+            dm._load_image("http://x/y.jpg")
+        assert dm._state == "IMAGE"
+        assert dm._image_override is not None
+        assert dm._image_expiry > before
+
+    def test_canvas_includes_battery_indicator(self):
+        dm, disp_mod = _make_display()
+        dm._battery = 75
+        fake_img = MagicMock(width=100, height=100)
+        with patch.object(disp_mod, "_fetch_pil_image", return_value=fake_img), \
+             patch.object(disp_mod, "_draw_battery") as draw_bat, \
+             patch.dict(sys.modules,
+                        {"PIL.Image": MagicMock(new=MagicMock(return_value=MagicMock(paste=MagicMock()))),
+                         "PIL": MagicMock(ImageDraw=MagicMock(Draw=MagicMock(return_value=MagicMock())))}):
+            dm._load_image("http://x/y.jpg")
+        # _draw_battery is called once with the battery snapshot.
+        assert draw_bat.called
+        last_call_battery = draw_bat.call_args[0][1]
+        assert last_call_battery == 75
+
+
+# ---------------------------------------------------------------------------
+# show_image_url() dispatches a background thread (doesn't block)
+# ---------------------------------------------------------------------------
+
+class TestShowImageUrl:
+    def test_spawns_daemon_thread(self):
+        dm, _ = _make_display()
+        with patch("threading.Thread") as Thread:
+            dm.show_image_url("http://x/y.jpg")
+        Thread.assert_called_once()
+        kwargs = Thread.call_args.kwargs
+        assert kwargs.get("daemon") is True
+        # Target should be _load_image with the URL.
+        assert kwargs["target"] == dm._load_image
+        assert kwargs["args"] == ("http://x/y.jpg",)
+
+
+# ---------------------------------------------------------------------------
+# Every declared state has a dispatch arm in _render_face
+# ---------------------------------------------------------------------------
+
+class TestAllStatesDispatch:
+    def test_every_face_state_has_a_dispatch_arm(self):
+        """Static check on the source so the FACE_STATES tuple stays in sync
+        with _render_face — would have caught any missing state when C3/C6
+        add LOADING / IMAGE_MISSING / CURIOUS / BORED."""
+        import inspect
+        import pi_client.display as disp_mod
+        source = inspect.getsource(disp_mod._render_face)
+        for state in disp_mod.FACE_STATES:
+            if state == "IMAGE":
+                # IMAGE has no dispatch arm — the caller substitutes the
+                # downloaded canvas and _render_face falls back to IDLE.
+                continue
+            assert f'"{state}"' in source, f"{state} missing from _render_face"
