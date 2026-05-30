@@ -37,6 +37,11 @@ IMAGE_DISPLAY_MAX_SECONDS = int(os.getenv("IMAGE_DISPLAY_MAX_SECONDS", "12"))
 # How long the "couldn't find a picture" face stays up after a fetch failure.
 IMAGE_MISSING_SECONDS = int(os.getenv("IMAGE_MISSING_SECONDS", "2"))
 DISPLAY_FPS       = int(os.getenv("DISPLAY_FPS", "8"))   # 8 fps suits Pi Zero WH single-core
+# How long the CURIOUS "hm?" face stays up after the bot asks a question.
+CURIOUS_DISPLAY_SECONDS = int(os.getenv("CURIOUS_DISPLAY_SECONDS", "2"))
+# After this many seconds of no button press the face drifts to BORED. Set to
+# 0 to disable.
+BORED_AFTER_SECONDS = int(os.getenv("BORED_AFTER_SECONDS", "120"))
 
 # Volume rocker (BCM numbering)
 VOL_UP_PIN   = int(os.getenv("VOL_UP_PIN",   "5"))   # physical pin 29

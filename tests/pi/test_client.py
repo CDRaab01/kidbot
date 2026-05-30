@@ -97,6 +97,27 @@ class TestGetLatestImage:
             assert c.get_latest_image() == (None, False)
 
 
+class TestGetLatestReply:
+    def test_returns_reply(self, client_mod):
+        c = client_mod.ServerClient()
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"reply": "want to hear more?"}
+        with patch("requests.get", return_value=resp):
+            assert c.get_latest_reply() == "want to hear more?"
+
+    def test_missing_reply_returns_empty(self, client_mod):
+        c = client_mod.ServerClient()
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"reply": ""}
+        with patch("requests.get", return_value=resp):
+            assert c.get_latest_reply() == ""
+
+    def test_network_failure_returns_empty(self, client_mod):
+        c = client_mod.ServerClient()
+        with patch("requests.get", side_effect=requests.RequestException):
+            assert c.get_latest_reply() == ""
+
+
 # ---------------------------------------------------------------------------
 # send_audio_stream
 # ---------------------------------------------------------------------------

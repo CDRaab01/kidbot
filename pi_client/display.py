@@ -40,6 +40,8 @@ FACE_STATES = (
     "IMAGE",          # downloaded picture rendered via _image_override
     "LOADING",        # waiting for / fetching an image
     "IMAGE_MISSING",  # image fetch / decode failed — gentle "couldn't find it"
+    "CURIOUS",        # bot just asked the child a question — pupils tilt, brow lifts
+    "BORED",          # no input for a while — half-lid eyes, slow blink
 )
 
 
@@ -214,6 +216,17 @@ def _render_face(state: str, frame: int, battery: Optional[int]) -> "PIL.Image.I
         _draw_idle_eyes(draw, leye_x, reye_x, eye_y, frame)
         _draw_mouth_flat(draw, cx, cy + 30)
 
+    elif state == "CURIOUS":
+        # Pupils offset to one side + one eyebrow lifted — reads as "hm?".
+        _draw_curious_eyes(draw, leye_x, reye_x, eye_y)
+        _draw_eyebrow_lift_right(draw, reye_x, eye_y)
+        _draw_mouth_smile(draw, cx, cy + 30, small=True)
+
+    elif state == "BORED":
+        # Half-lid eyes + flat mouth — gentle "still here, ready when you are".
+        _draw_bored_eyes(draw, leye_x, reye_x, eye_y, frame)
+        _draw_mouth_flat(draw, cx, cy + 30)
+
     return img
 
 
@@ -280,6 +293,34 @@ def _draw_x_eyes(draw, lx, rx, y):
         draw.line([ex + s, y - s, ex - s, y + s], fill=ERR_COLOR, width=4)
 
 
+def _draw_curious_eyes(draw, lx, rx, y):
+    """Open eyes with pupils offset to the right — head-tilt 'hm?' look."""
+    r = 22
+    pupil_offset = 6  # px to the right
+    for ex in (lx, rx):
+        draw.ellipse([ex - r, y - r, ex + r, y + r], outline=EYE_COLOR, width=3)
+        draw.ellipse([ex - r + 2, y - r + 2, ex + r - 2, y + r - 2],
+                     outline=EYE_HILIGHT, width=1)
+        draw.ellipse([ex - 8 + pupil_offset, y - 8,
+                      ex + 8 + pupil_offset, y + 8], fill=PUPIL)
+
+
+def _draw_bored_eyes(draw, lx, rx, y, frame):
+    """Half-lid eyes (upper half hidden by a lid line). Slow blink ~9s cycle."""
+    in_blink = (frame % 90) in (87, 88, 89)
+    r = 22
+    for ex in (lx, rx):
+        if in_blink:
+            draw.line([ex - r, y, ex + r, y], fill=EYE_COLOR, width=4)
+        else:
+            # Lower half-circle only — the lid is a horizontal line across
+            # the middle.
+            draw.arc([ex - r, y - r, ex + r, y + r], start=0, end=180,
+                     fill=EYE_COLOR, width=3)
+            draw.line([ex - r, y, ex + r, y], fill=EYE_COLOR, width=3)
+            draw.ellipse([ex - 6, y - 2, ex + 6, y + 6], fill=PUPIL)
+
+
 # ---------------------------------------------------------------------------
 # Eyebrow helpers
 # ---------------------------------------------------------------------------
@@ -289,6 +330,11 @@ def _draw_eyebrows_raised(draw, lx, rx, ey):
         sign = -1 if ex < W // 2 else 1
         draw.line([ex - 18, ey - 38, ex + 18 * sign, ey - 48],
                   fill=BROW_COLOR, width=3)
+
+
+def _draw_eyebrow_lift_right(draw, rx, ey):
+    """A single lifted eyebrow over the right eye — the universal 'hm?' look."""
+    draw.line([rx - 16, ey - 36, rx + 16, ey - 46], fill=BROW_COLOR, width=3)
 
 
 # ---------------------------------------------------------------------------

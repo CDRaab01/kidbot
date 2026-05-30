@@ -5,6 +5,7 @@ client, display, volume_rocker) against the stubbed platform modules, then we
 swap them for MagicMocks to drive on_press / on_release in isolation.
 """
 import importlib
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,3 +126,146 @@ class TestPollForImage:
         states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
         # LOADING shown exactly once (not on every pending poll).
         assert states.count("LOADING") == 1
+
+
+# ---------------------------------------------------------------------------
+# CURIOUS dispatch when the bot ends a reply with a question
+# ---------------------------------------------------------------------------
+
+class TestEndsWithQuestion:
+    def test_plain_question(self, main_mod):
+        assert main_mod._ends_with_question("what do you think?") is True
+
+    def test_trailing_whitespace_ok(self, main_mod):
+        assert main_mod._ends_with_question("really?  \n") is True
+
+    def test_trailing_quote_ok(self, main_mod):
+        assert main_mod._ends_with_question('does it count?"') is True
+
+    def test_no_question(self, main_mod):
+        assert main_mod._ends_with_question("dinosaurs are huge.") is False
+
+    def test_empty_returns_false(self, main_mod):
+        assert main_mod._ends_with_question("") is False
+        assert main_mod._ends_with_question(None) is False  # type: ignore
+
+
+class TestCuriousDispatch:
+    def test_question_reply_shows_curious_not_happy(self, main_mod):
+        main_mod.audio.stop_recording.return_value = "/tmp/x.wav"
+        main_mod.client.send_audio_stream.return_value = iter([b"mp3"])
+        main_mod.client.get_latest_image.return_value = (None, False)
+        main_mod.client.get_latest_reply.return_value = "want to hear more?"
+        main_mod.on_press()
+        with patch("os.unlink"), patch("time.sleep"):
+            main_mod.on_release()
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "CURIOUS" in states
+        assert "HAPPY" not in states
+
+    def test_non_question_reply_shows_happy(self, main_mod):
+        main_mod.audio.stop_recording.return_value = "/tmp/x.wav"
+        main_mod.client.send_audio_stream.return_value = iter([b"mp3"])
+        main_mod.client.get_latest_image.return_value = (None, False)
+        main_mod.client.get_latest_reply.return_value = "Dinosaurs are amazing!"
+        main_mod.on_press()
+        with patch("os.unlink"), patch("time.sleep"):
+            main_mod.on_release()
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "HAPPY" in states
+        assert "CURIOUS" not in states
+
+
+# ---------------------------------------------------------------------------
+# BORED idle timer
+# ---------------------------------------------------------------------------
+
+class TestBoredWatcher:
+    def test_mark_activity_resets_timer(self, main_mod):
+        main_mod._last_activity = 0
+        main_mod._bored = True
+        main_mod._mark_activity()
+        assert main_mod._last_activity > 0
+        assert main_mod._bored is False
+
+    def test_press_marks_activity(self, main_mod):
+        main_mod._last_activity = 0
+        main_mod.on_press()
+        assert main_mod._last_activity > 0
+
+    def test_watcher_skips_when_disabled(self, main_mod):
+        # BORED_AFTER_SECONDS=0 → never set BORED.
+        main_mod._last_activity = 0
+        with patch.object(main_mod, "BORED_AFTER_SECONDS", 0), \
+             patch("time.sleep") as sleep:
+            def stop_after_first(_):
+                raise StopIteration  # break out of while True
+            sleep.side_effect = stop_after_first
+            try:
+                main_mod._bored_watcher()
+            except StopIteration:
+                pass
+        # display.set_state never called with BORED
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "BORED" not in states
+
+    def test_watcher_sets_bored_after_threshold(self, main_mod):
+        main_mod._bored = False
+        main_mod._last_activity = time.time() - 200  # very stale
+        with patch.object(main_mod, "BORED_AFTER_SECONDS", 120), \
+             patch("time.sleep") as sleep:
+            stop = [False]
+            def one_tick(_):
+                if stop[0]:
+                    raise StopIteration
+                stop[0] = True
+            sleep.side_effect = one_tick
+            try:
+                main_mod._bored_watcher()
+            except StopIteration:
+                pass
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "BORED" in states
+        assert main_mod._bored is True
+
+    def test_watcher_does_not_re_set_when_already_bored(self, main_mod):
+        main_mod._bored = True  # already bored
+        main_mod._last_activity = time.time() - 200
+        with patch.object(main_mod, "BORED_AFTER_SECONDS", 120), \
+             patch("time.sleep") as sleep:
+            stop = [False]
+            def one_tick(_):
+                if stop[0]:
+                    raise StopIteration
+                stop[0] = True
+            sleep.side_effect = one_tick
+            try:
+                main_mod._bored_watcher()
+            except StopIteration:
+                pass
+        # No new set_state("BORED") — already there.
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert states.count("BORED") == 0
+
+    def test_watcher_skips_during_conversation(self, main_mod):
+        """Busy_lock held → mid-conversation → never bored."""
+        main_mod._bored = False
+        main_mod._last_activity = time.time() - 200
+        main_mod._busy_lock.acquire()
+        try:
+            with patch.object(main_mod, "BORED_AFTER_SECONDS", 120), \
+                 patch("time.sleep") as sleep:
+                stop = [False]
+                def one_tick(_):
+                    if stop[0]:
+                        raise StopIteration
+                    stop[0] = True
+                sleep.side_effect = one_tick
+                try:
+                    main_mod._bored_watcher()
+                except StopIteration:
+                    pass
+        finally:
+            main_mod._busy_lock.release()
+        states = [c[0][0] for c in main_mod.display.set_state.call_args_list]
+        assert "BORED" not in states
