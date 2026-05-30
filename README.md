@@ -39,8 +39,9 @@ Conversation history is kept per session (up to 10 exchanges). Sessions persist 
 | `stt.py` | Faster-Whisper speech-to-text |
 | `tts.py` | Kokoro ONNX text-to-speech, ffmpeg WAV→MP3 |
 | `image_search.py` | 5-source parallel image search (OpenVerse, Commons, Wikipedia, NASA, iNaturalist) |
-| `session.py` | In-memory + SQLite session store |
-| `guardrails.py` | Input/output safety filtering and system prompt |
+| `session.py` | In-memory + SQLite session store (history + durable `facts`) |
+| `memory.py` | Regex-extracted long-term facts (age, pet, favourites, ...) |
+| `guardrails.py` | Input/output safety filters, system prompt, varied fallback pools |
 | `config.py` | All configuration via env vars |
 
 ### Pi Client (`pi_client/`)
@@ -169,8 +170,9 @@ All server settings are env vars. Copy `.env.example` to `.env` to configure.
 | `KOKORO_VOICE` | `bm_lewis` | Voice name |
 | `KOKORO_SPEED` | `1.2` | Speech rate multiplier |
 | `KIDBOT_API_KEY` | _(empty)_ | Optional shared secret — set on both server and Pi |
-| `PERSIST_SESSIONS` | _(empty)_ | Set to `1` to enable SQLite session persistence |
-| `SESSION_DB_PATH` | `server/sessions.db` | SQLite database path |
+| `PERSIST_SESSIONS` | _(empty)_ | Set to `1` to enable SQLite session persistence (history + durable facts) |
+| `SESSION_DB_PATH` | `server/sessions/sessions.db` | SQLite database path (inside the mounted Docker volume) |
+| `SESSION_TIMEOUT_HOURS` | `168` | Forget a session after this many idle hours (default 7 days; the Pi uses a stable hostname-based id, so memory survives reboots) |
 | `LOG_FILE` | _(empty)_ | Log file path — empty logs to stdout only |
 
 **Pi client env vars** (set in `pi_setup/kidbot.service` or environment):
@@ -248,10 +250,12 @@ test-pi     ──┘
 ```
 
 - **test-server** — API, LLM, session, STT, TTS, guardrails (160 tests)
-- **test-image-search** — image search and priority/fallback logic (46 tests)
-- **test-pi-client** — display, volume, GPIO (37 tests)
+- **test-image-search** — image search and priority/fallback logic
+- **test-pi-client** — display, volume, GPIO, button, audio, main loop
 - **deploy** — SSH into server: `git pull && docker compose up -d --build`
-- **smoke-test** — runs all 10 image test cases inside the container; fails if any topic returns no image
+- **smoke-test** — two checks against the live server:
+  - `scripts/test_images.py --no-vision` fails if any of the 10 image topics returns no URL
+  - `scripts/test_conversation.py` (advisory) drives real multi-turn `/chat_text` conversations and grades on-topic flow + fact recall with an LLM judge — the only check that exercises prompt-level behaviour
 
 ### Required GitHub Secrets
 

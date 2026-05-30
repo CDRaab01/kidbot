@@ -50,11 +50,13 @@ pi_setup/       Pi setup scripts and service file
   setup_2w.sh   Full automated setup for Pi Zero 2W
   kidbot.service systemd unit file — copy to /etc/systemd/system/
 tests/
-  server/       Server unit tests (243 collected, 0 skipped)
+  server/       Server unit tests (~430 collected, 0 skipped)
   pi/           Pi client unit tests (10 skipped — need $DISPLAY)
   live/         Live integration tests — require a running server, skipped in CI
 scripts/        CLI tools (not part of the server, not tested in CI)
-  keyboard_test.py  Keyboard-driven test harness (no physical buttons needed)
+  keyboard_test.py     Keyboard-driven test harness (no physical buttons needed)
+  test_images.py       Image relevance smoke test (run in deploy pipeline)
+  test_conversation.py Behavioural conversation smoke test — multi-turn, LLM-judged
 requirements/   server_requirements.txt  |  pi_requirements.txt
 docs/           System and software manuals
 .github/workflows/  tests.yml (on PR)  |  deploy.yml (on push to main)
@@ -70,8 +72,9 @@ docs/           System and software manuals
 | `server/tts.py` | `TextToSpeech` — Kokoro ONNX → WAV → ffmpeg → MP3 |
 | `server/stt.py` | `SpeechToText` — Faster-Whisper |
 | `server/image_search.py` | 5-source parallel fetch (OpenVerse → Commons → Wikipedia → NASA → iNaturalist) |
-| `server/session.py` | `SessionStore` — in-memory dict + optional SQLite, per-session history + latest image/reply |
-| `server/guardrails.py` | `get_system_prompt()`, `is_input_safe()`, `is_output_safe()` |
+| `server/session.py` | `SessionStore` — in-memory dict + optional SQLite, per-session history + latest image/reply + durable `facts` dict (with migration for pre-facts DBs) |
+| `server/guardrails.py` | `get_system_prompt(facts)`, `is_input_safe()`, `is_output_safe()`, random fallback pickers `redirect_response()` / `output_blocked_response()` |
+| `server/memory.py` | `extract_facts()` — regex extraction of durable facts (age, pet, fear, favourites, nickname) from the child's utterances. No extra LLM call |
 | `pi_client/audio.py` | `AudioManager` — PyAudio capture (idle loop), mpg123 playback, `stop_playback()`, `play_volume_blip()`, `_chime_volume()` |
 | `pi_client/volume.py` | `VolumeRocker` — GPIO or keyboard mode (`use_gpio=False`), amixer PCM control, reads back actual hardware level |
 | `pi_client/main.py` | Entry point, push-to-talk loop, `_on_volume_change()` wires display + blip |
@@ -111,7 +114,9 @@ deploy.yml  (on push to main):
   test-server | test-image-search | test-pi-client → deploy → smoke-test
 ```
 
-The `smoke-test` job runs `docker compose exec -T kidbot python scripts/test_images.py --no-vision` on the live server after deploy. It fails if any of the 10 image topics returns no URL.
+The `smoke-test` job runs two checks against the live server after deploy:
+1. `scripts/test_images.py --no-vision` — fails if any of the 10 image topics returns no URL.
+2. `scripts/test_conversation.py` — drives real multi-turn `/chat_text` conversations and uses an LLM judge (auto-detected from LM Studio's `/v1/models`, same pattern as the vision check) to grade on-topic flow and fact recall. **Advisory by default** (exits 0 on judge failures so LLM stochasticity doesn't flap the deploy gate); pass `--strict` to fail the build on a NO verdict. This is the *only* way to verify the prompt-level behaviour the unit tests can't.
 
 ## Adding a new API endpoint
 
@@ -134,10 +139,17 @@ Streaming responses store the image via `_fetch_and_store_image()` (asyncio back
 
 ## Session flow
 
-- Session ID is a string passed by the client (Pi sends its hostname, CLI sends `cli-test`)
+- Session ID is a string passed by the client. The Pi derives a stable id from the hostname (`pi_client.client._stable_session_id`) so memory survives reboots; CLI tests send `cli-test`
 - `SessionStore.add_exchange(session_id, user_text, reply_text)` appends to history and trims to `LLM_MAX_HISTORY_EXCHANGES` (default 8) pairs
-- Sessions expire after 30 min of inactivity and are purged on next access
-- `PERSIST_SESSIONS=1` saves to SQLite; on restart, history is restored for sessions not yet expired
+- Sessions expire after `SESSION_TIMEOUT` (default **7 days**, env `SESSION_TIMEOUT_HOURS`) of inactivity — long enough that a lunch break, school day, or reboot doesn't wipe the conversation
+- `PERSIST_SESSIONS=1` saves history and `facts` to SQLite; on restart, history is restored for sessions not yet expired (legacy DBs without a `facts` column are migrated in place)
+
+## Long-term profile memory
+
+- After every exchange, `server.memory.extract_facts(user_text)` pulls durable facts (age, pet, fear, favourite X, nickname) from the child's utterance via deterministic regex — no extra LLM call, so no added latency
+- Facts are stored per-session via `SessionStore.update_facts()` (newer values overwrite older ones, e.g. a new age) and persisted in the SQLite `facts` column
+- Each turn passes the current `facts` dict into `_build_messages` → `get_system_prompt(facts)`, which appends a "Here's what you remember about CHILD" block with guidance to weave them in naturally, never recite
+- Any fact whose value would trip `is_output_safe` is dropped before storage
 
 ## Important constraints
 
