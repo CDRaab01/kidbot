@@ -21,6 +21,7 @@ Env vars:
 import os
 import sys
 import time
+import uuid
 import webbrowser
 
 import requests
@@ -149,6 +150,64 @@ def _check_with_vision(image_url: str, topic: str, model: str) -> tuple[bool | N
 
 
 # ---------------------------------------------------------------------------
+# HEAD check — used in --no-vision mode so CI catches dead URLs / HTML
+# redirects / non-image content that the vision-LLM check would otherwise
+# need to flag. Cheap: ~one round-trip per URL.
+# ---------------------------------------------------------------------------
+def _head_check(image_url: str) -> tuple[bool, str]:
+    """HEAD-request the image URL. Returns (ok, explanation).
+
+    Fails the gate on:
+      - HEAD raises (DNS failure, timeout, refused)
+      - non-200 status (404 dead Wikimedia node, 403 auth-walled redirect)
+      - Content-Type that isn't image/* (HTML 'this page has moved' fallback)
+    """
+    try:
+        r = requests.head(image_url, allow_redirects=True, timeout=5)
+    except requests.RequestException as exc:
+        return False, f"HEAD failed: {exc.__class__.__name__}"
+    if r.status_code != 200:
+        return False, f"HTTP {r.status_code}"
+    ctype = r.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if not ctype.startswith("image/"):
+        return False, f"not an image (Content-Type: {ctype or 'unknown'})"
+    return True, f"reachable {ctype}"
+
+
+# ---------------------------------------------------------------------------
+# Dedup check — verifies exclude_urls is wired through end to end. Asking for
+# ANOTHER picture of the same topic in the same session must return a
+# different URL. iNaturalist's elephant index has hundreds of photos, so the
+# probability of a same-URL collision is negligible.
+# ---------------------------------------------------------------------------
+def run_dedup_check() -> int:
+    """Returns 1 if exclude_urls is broken (same URL twice), else 0."""
+    print("\nDedup check — 'another picture' must return a different URL")
+    session = f"dedup-test-{uuid.uuid4().hex[:8]}"
+
+    _, url1 = _query_kidbot("show me a picture of an elephant", session)
+    if not url1:
+        print("  Result   : FAIL (no URL on first request)\n")
+        return 1
+    print(f"  URL #1: {url1}")
+
+    time.sleep(0.5)
+
+    _, url2 = _query_kidbot("show me another picture of an elephant", session)
+    if not url2:
+        print("  Result   : FAIL (no URL on second request)\n")
+        return 1
+    print(f"  URL #2: {url2}")
+
+    if url1 == url2:
+        print("  Result   : FAIL (duplicate URL — exclude_urls not honoured)\n")
+        return 1
+
+    print("  Result   : PASS (URLs differ)\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 def run(
@@ -209,7 +268,13 @@ def run(
             print(f"  Vision   : {explanation}")
             print(f"  Result   : {verdict}\n")
         else:
-            print(f"  Result   : PASS (image returned — open URL to verify visually)\n")
+            ok, explanation = _head_check(image_url)
+            print(f"  HEAD     : {explanation}")
+            if ok:
+                print("  Result   : PASS\n")
+            else:
+                print("  Result   : FAIL\n")
+                failures += 1
 
         time.sleep(0.5)
 
@@ -241,8 +306,14 @@ def main() -> None:
 
     failures = run(tests, use_vision=not no_vision, open_browser=open_flag)
 
+    # Full-suite run only — the single-topic path is for ad-hoc debugging, not
+    # the deploy gate. Dedup needs two queries against one session, which would
+    # add unwanted noise to "tell me one image".
+    if not topics:
+        failures += run_dedup_check()
+
     if failures:
-        print(f"{failures} image(s) graded as NOT relevant.")
+        print(f"{failures} image check(s) failed.")
         sys.exit(1)
 
 
