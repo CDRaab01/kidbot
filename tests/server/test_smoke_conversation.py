@@ -182,6 +182,73 @@ class TestFormatTranscript:
 # _judge — verdict parsing and failure handling
 # ---------------------------------------------------------------------------
 
+class TestDetectJudgeModel:
+    """Regression: LM Studio's /v1/models lists every loaded model, including
+    image-gen (Flux) and embeddings. Picking the first entry blindly broke
+    against a real user setup where Flux came back first and 400'd on chat.
+    """
+
+    def _models_resp(self, models: list[dict]):
+        r = MagicMock(status_code=200)
+        r.json.return_value = {"data": models}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_skips_flux_image_model(self, smoke):
+        # The actual failure mode reported by the user.
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "gemma-3-4b-it"},
+             ])):
+            assert smoke._detect_judge_model() == "gemma-3-4b-it"
+
+    def test_skips_stable_diffusion(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "stable-diffusion-xl"},
+                {"id": "qwen2-7b-instruct"},
+             ])):
+            assert smoke._detect_judge_model() == "qwen2-7b-instruct"
+
+    def test_skips_embedding_models(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "nomic-embed-text-v1.5"},
+                {"id": "bge-large-en"},
+                {"id": "llama-3.2-3b-instruct"},
+             ])):
+            assert smoke._detect_judge_model() == "llama-3.2-3b-instruct"
+
+    def test_respects_explicit_type_metadata(self, smoke):
+        # LM Studio tags entries with type=embeddings; trust it even if the
+        # id wouldn't trip the name deny-list.
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "custom-encoder-v2", "type": "embeddings"},
+                {"id": "qwen-chat", "type": "llm"},
+             ])):
+            assert smoke._detect_judge_model() == "qwen-chat"
+
+    def test_falls_back_to_only_loaded_model(self, smoke):
+        # Single non-deny-listed model — keep current behaviour.
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "gemma-3-4b-it"},
+             ])):
+            assert smoke._detect_judge_model() == "gemma-3-4b-it"
+
+    def test_returns_none_when_all_models_are_non_chat(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "nomic-embed-text-v1.5"},
+             ])):
+            assert smoke._detect_judge_model() is None
+
+    def test_returns_none_on_network_failure(self, smoke):
+        with patch("requests.get", side_effect=requests.ConnectionError):
+            assert smoke._detect_judge_model() is None
+
+    def test_returns_none_on_empty_model_list(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([])):
+            assert smoke._detect_judge_model() is None
+
+
 class TestJudge:
     def _mock_openai_returning(self, content: str):
         client = MagicMock()

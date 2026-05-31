@@ -304,13 +304,42 @@ def _run_probe(name: str, turns: list[str],
 # ---------------------------------------------------------------------------
 # Judge — auto-detected LM Studio model, same pattern as the vision check
 # ---------------------------------------------------------------------------
+# LM Studio's /v1/models lists every loaded model — image-gen and embedding
+# models too, not just chat LLMs. Picking the first entry blindly broke when
+# the first model returned was e.g. flux.2-klein-9b (image gen → 400 on
+# chat/completions). This deny-list skips obvious non-chat models by id /
+# type so auto-detect lands on something that can actually grade transcripts.
+_NON_CHAT_MODEL_PATTERNS = (
+    "flux", "stable-diffusion", "sdxl", "sd-",  # image generation
+    "embed", "bge-", "e5-", "nomic-", "all-minilm",  # embeddings
+    "whisper", "kokoro",  # audio
+)
+_NON_CHAT_MODEL_TYPES = ("embeddings", "embedding", "image", "diffusion",
+                         "audio", "tts", "stt")
+
+
+def _is_chat_model(model: dict) -> bool:
+    """True if the LM Studio model entry looks like a chat-completions model.
+    Best-effort: prefers explicit type metadata, falls back to a name
+    deny-list. Conservative — false positives just mean we'd hit a 400 and
+    surface a clear judge error, same as the pre-filter behaviour."""
+    mtype = (model.get("type") or "").lower()
+    if mtype in _NON_CHAT_MODEL_TYPES:
+        return False
+    model_id = (model.get("id") or "").lower()
+    return not any(pat in model_id for pat in _NON_CHAT_MODEL_PATTERNS)
+
+
 def _detect_judge_model() -> str | None:
-    """Return the first model id from LM Studio, or None if none loaded."""
+    """Return the first chat-capable model id from LM Studio, or None."""
     try:
         resp = requests.get(f"{LM_URL}/models", timeout=5)
         resp.raise_for_status()
         models = resp.json().get("data", [])
-        return models[0]["id"] if models else None
+        for m in models:
+            if _is_chat_model(m):
+                return m["id"]
+        return None
     except Exception:
         return None
 
