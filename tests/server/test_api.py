@@ -213,6 +213,35 @@ class TestChatText:
             client.post("/chat_text", data={"text": "hi", "session_id": "t1"})
         stt.transcribe.assert_not_called()
 
+    def test_fetched_image_url_is_recorded_for_dedup(self):
+        """Regression: /chat_text and /chat (non-streaming) fetched the image
+        URL but never called set_latest_image, so every follow-up request in
+        the same session passed exclude_urls=[] and got the same top hit
+        back. The streaming paths already recorded — only the non-streaming
+        paths leaked. User-facing symptom: 'show me another picture of an
+        elephant' returned the same elephant image."""
+        from server.main import _sessions
+
+        with _loaded_client(llm_reply="Here you go [IMAGE: elephant]") as (client, *_), \
+             patch("server.main.fetch_image_url",
+                   side_effect=["http://x/e1.jpg", "http://x/e2.jpg"]) as fetch:
+            session = "dedup-regression"
+            r1 = client.post("/chat_text",
+                             data={"text": "show me an elephant", "session_id": session})
+            assert r1.headers.get("x-image-url") == "http://x/e1.jpg"
+
+            # Critical assertion: after request 1, the session must have
+            # recorded the URL — otherwise request 2 won't get exclude_urls.
+            assert "http://x/e1.jpg" in _sessions.get_shown_image_urls(session)
+
+            r2 = client.post("/chat_text",
+                             data={"text": "show me another elephant",
+                                   "session_id": session})
+            assert r2.headers.get("x-image-url") == "http://x/e2.jpg"
+            # The second fetch must have been called with the first URL in
+            # exclude_urls — otherwise dedup is broken.
+            assert fetch.call_args_list[1].kwargs.get("exclude_urls") == ["http://x/e1.jpg"]
+
 
 # ---------------------------------------------------------------------------
 # DELETE /session/{session_id}

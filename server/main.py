@@ -180,6 +180,8 @@ def _run_llm_pipeline(text: str, session_id: str) -> tuple[str, str]:
         logger.info("[%s] Fetching image for: %r", session_id, image_term)
         shown = _sessions.get_shown_image_urls(session_id)
         image_url = fetch_image_url(image_term, exclude_urls=shown) or ""
+        if image_url:
+            _sessions.set_latest_image(session_id, image_url)
     return reply_text, image_url
 
 
