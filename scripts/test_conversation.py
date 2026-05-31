@@ -185,7 +185,15 @@ def _judge(transcript: list[tuple[str, str]], question: str,
     """Ask the judge LLM the YES/NO question about the transcript.
 
     Returns (verdict, explanation). verdict is None if the judge call failed.
+
+    Note: Gemma 4 (and other reasoning-mode models) emit <think>...</think>
+    blocks before the real answer. The KidBot server strips these via
+    server/llm.py, but this script calls OpenAI SDK directly and would
+    otherwise see "answer" = the unterminated reasoning block. We give the
+    model enough budget to FINISH thinking and emit a real answer, then
+    strip the CoT before parsing the verdict.
     """
+    import re
     try:
         from openai import OpenAI  # already a project dependency
         client = OpenAI(base_url=LM_URL, api_key="not-needed")
@@ -200,11 +208,17 @@ def _judge(transcript: list[tuple[str, str]], question: str,
         rsp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
+            max_tokens=800,  # plenty for any internal CoT + a 2-line answer
             temperature=0.0,
-            timeout=60,
+            timeout=120,
         )
         answer = (rsp.choices[0].message.content or "").strip()
+        # Strip Gemma-style <think>...</think> reasoning so we parse the
+        # actual visible answer. DOTALL handles multi-line reasoning blocks.
+        answer = re.sub(r"<think>.*?</think>", "", answer,
+                        flags=re.DOTALL | re.IGNORECASE).strip()
+        if not answer:
+            return None, "judge returned empty content (possibly all reasoning, no answer)"
         first = answer.split("\n", 1)[0].strip().upper()
         verdict = first.startswith("YES")
         return verdict, answer
@@ -235,7 +249,10 @@ def run(probes: list[tuple[str, list[str], str]], use_judge: bool = True) -> int
         transcript = _run_probe(name, turns)
         for child, bot in transcript:
             print(f"  child: {child}")
-            print(f"  bot  : {(bot or '(no reply)')[:200]}")
+            # Print the FULL reply, not just the first 200 chars — the ending
+            # of the reply is what most of these probes care about (e.g. does
+            # it always finish with a question, does it pivot, etc.).
+            print(f"  bot  : {(bot or '(no reply)')}")
 
         if not all(b for _, b in transcript):
             print("  Result : FAIL (no reply)\n")

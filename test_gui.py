@@ -55,6 +55,21 @@ def _beep(freq: int, duration: float = 0.08, volume: float = 0.22) -> None:
     except Exception:
         pass
 
+def _ends_with_question(text: str) -> bool:
+    """True if the bot's reply ends with a question mark (ignoring trailing
+    whitespace and quote marks). Mirrors pi_client.main._ends_with_question
+    so the GUI dispatches CURIOUS on the same condition as the Pi."""
+    if not text:
+        return False
+    return text.rstrip().rstrip("\"'”’").endswith("?")
+
+
+# How long to wait with no input before the face drifts to BORED. Short by
+# default in the GUI (60 s) since the whole point of test_gui is to see all
+# the states quickly; override via env var to match the Pi's 120 s default.
+BORED_AFTER_SECONDS = int(os.getenv("BORED_AFTER_SECONDS", "60"))
+
+
 STATUS_COLORS = {
     "IDLE":       "#27ae60",
     "RECORDING":  "#e74c3c",
@@ -82,6 +97,14 @@ class FacePanel:
         "RECORDING":  "LISTENING",
         "PROCESSING": "THINKING",
         "PLAYING":    "SPEAKING",
+        # New states (C3/C6) — passed straight through so callers can set them
+        # via the same set_state path the existing GUI states use.
+        "LOADING":    "LOADING",
+        "IMAGE_MISSING": "IMAGE_MISSING",
+        "CURIOUS":    "CURIOUS",
+        "BORED":      "BORED",
+        "HAPPY":      "HAPPY",
+        "ERROR":      "ERROR",
     }
 
     def __init__(self, parent: tk.Widget, root: tk.Tk):
@@ -137,29 +160,49 @@ class FacePanel:
                 self._image_over = None
 
     def show_image_url(self, url: str) -> None:
-        """Download and display an image, auto-reverting to IDLE after 8 s."""
+        """Download and display an image. Mirrors pi_client.display:
+        enters LOADING immediately so the user sees we're reaching for
+        something, IMAGE_MISSING on failure, cover-cropped IMAGE on success."""
+        with self._lock:
+            if self._face_state != "IMAGE":
+                self._face_state = "LOADING"
+                self._image_over = None
         threading.Thread(target=self._load_image, args=(url,), daemon=True).start()
 
     def _load_image(self, url: str) -> None:
+        # Reuse the production cover-crop helper so the GUI shows exactly
+        # what the Pi will show.
+        from pi_client.display import _fit_image_to_canvas
+        max_w, max_h = self.SRC_W, self.SRC_H - 24
         try:
             resp = requests.get(
                 url, timeout=8,
                 headers={"User-Agent": f"{BOT_NAME}/1.0 (educational child chatbot)"},
             )
             resp.raise_for_status()
+            # verify() catches half-downloaded / corrupt blobs that would
+            # otherwise decode "successfully" then render blank.
+            Image.open(io.BytesIO(resp.content)).verify()
             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            max_w, max_h = self.SRC_W, self.SRC_H - 24
-            img.thumbnail((max_w, max_h), _RESAMPLE)
-            canvas_img = Image.new("RGB", (self.SRC_W, self.SRC_H), (20, 20, 40))
-            x = (self.SRC_W - img.width) // 2
-            y = 24 + (max_h - img.height) // 2
-            canvas_img.paste(img, (x, y))
+            fitted = _fit_image_to_canvas(img, max_w, max_h)
+            if fitted is None:
+                raise ValueError("fit returned None")
+        except Exception:
             with self._lock:
-                self._image_over   = canvas_img
-                self._face_state   = "IMAGE"
-                self._image_expiry = time.time() + 8
-        except Exception as exc:
-            pass  # silently ignore broken images
+                self._face_state   = "IMAGE_MISSING"
+                self._image_over   = None
+                self._image_expiry = time.time() + 2  # IMAGE_MISSING_SECONDS
+            return
+        canvas_img = Image.new("RGB", (self.SRC_W, self.SRC_H), (20, 20, 40))
+        x = (self.SRC_W - fitted.width) // 2
+        y = 24 + (max_h - fitted.height) // 2
+        canvas_img.paste(fitted, (x, y))
+        with self._lock:
+            self._image_over   = canvas_img
+            self._face_state   = "IMAGE"
+            # Display timer starts NOW (when the image actually paints),
+            # matching the C3 semantics on the Pi.
+            self._image_expiry = time.time() + 6
 
     def _tick(self) -> None:
         with self._lock:
@@ -168,7 +211,8 @@ class FacePanel:
             expiry = self._image_expiry
             fidx   = self._frame_idx
 
-        if state == "IMAGE" and time.time() > expiry:
+        # Auto-revert both IMAGE and IMAGE_MISSING after their timer expires.
+        if state in ("IMAGE", "IMAGE_MISSING") and time.time() > expiry:
             with self._lock:
                 self._face_state = "IDLE"
                 self._image_over = None
@@ -214,10 +258,15 @@ class KidBotGUI:
         self._reply_shown = False             # set True when typewriter fires
         self._typewriter_token: int = 0      # increment to cancel in-flight typewriter
         self.face: FacePanel | None = None
+        # BORED idle-watcher state
+        self._last_activity: float = time.time()
+        self._bored: bool = False
 
         self._build_ui()
         self._bind_keys()
         self._poll_queue()
+        # Start the BORED idle-watcher loop (re-arms itself via root.after).
+        self._bored_tick()
         self._log("System", f"Connected to {BOT_NAME}. Press SPACE to talk.")
 
     # ------------------------------------------------------------------
@@ -402,14 +451,41 @@ class KidBotGUI:
             highlightthickness=0, showvalue=False,
         ).pack(side=tk.LEFT)
 
+        # --- Preview face state (debug) ---
+        # Lets you eyeball every face state without having to organically
+        # trigger it. Useful for visual review of CURIOUS / BORED / LOADING /
+        # IMAGE_MISSING and the polish pass on the existing states.
+        from pi_client.display import FACE_STATES
+        tk.Label(win, text="Preview face:", font=("Segoe UI", 10, "bold"),
+                 fg="#bdc3c7", bg="#1a252f").grid(row=3, column=0, sticky=tk.E, **pad)
+        face_var = tk.StringVar(value="(live)")
+        face_options = ["(live)"] + [s for s in FACE_STATES if s != "IMAGE"]
+        face_combo = ttk.Combobox(win, textvariable=face_var, state="readonly",
+                                  values=face_options, font=("Segoe UI", 10), width=22)
+        face_combo.grid(row=3, column=1, sticky=tk.W, **pad)
+
+        def _on_face_preview(_event=None):
+            choice = face_var.get()
+            if not self.face:
+                return
+            # Force the state regardless of any active IMAGE display so the
+            # preview always takes effect immediately.
+            with self.face._lock:
+                self.face._face_state = "IDLE" if choice == "(live)" else choice
+                self.face._image_over = None
+            if choice == "(live)":
+                self._mark_activity()
+
+        face_combo.bind("<<ComboboxSelected>>", _on_face_preview)
+
         # --- Status label ---
         status_var = tk.StringVar(value="Fetching current settings…")
         tk.Label(win, textvariable=status_var, font=("Segoe UI", 9, "italic"),
-                 fg="#7f8c8d", bg="#1a252f").grid(row=3, column=0, columnspan=2, pady=(0, 4))
+                 fg="#7f8c8d", bg="#1a252f").grid(row=4, column=0, columnspan=2, pady=(0, 4))
 
         # --- Buttons ---
         btn_frame = tk.Frame(win, bg="#1a252f")
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=(4, 14))
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(4, 14))
 
         def _apply():
             def _do():
@@ -497,9 +573,29 @@ class KidBotGUI:
         self.root.bind("<Return>", self._on_enter)
         self.root.bind("<Escape>", lambda e: self.text_var.set(""))
 
+    def _mark_activity(self) -> None:
+        """Reset the BORED idle timer (called on any user interaction)."""
+        self._last_activity = time.time()
+        if self._bored and self.face:
+            self._bored = False
+            self.face.set_face_state("IDLE")
+
+    def _bored_tick(self) -> None:
+        """Idle watcher — sets BORED after BORED_AFTER_SECONDS of no activity.
+        Runs on the Tk main thread via root.after so no extra threading."""
+        try:
+            if BORED_AFTER_SECONDS > 0 and self.state == "IDLE" and not self._bored:
+                if time.time() - self._last_activity >= BORED_AFTER_SECONDS:
+                    self._bored = True
+                    if self.face:
+                        self.face.set_face_state("BORED")
+        finally:
+            self.root.after(5000, self._bored_tick)
+
     def _on_space_press(self, event):
         if self.root.focus_get() is self.text_entry:
             return  # let space work normally in the text box
+        self._mark_activity()
         if self.state == "IDLE":
             self._start_recording()
         elif self.state == "PLAYING":
@@ -512,6 +608,7 @@ class KidBotGUI:
             self._stop_recording_and_send()
 
     def _on_enter(self, event):
+        self._mark_activity()
         self._send_text()
 
     # ------------------------------------------------------------------
@@ -877,6 +974,7 @@ class KidBotGUI:
 
     def _after_play(self):
         """After playback: update face states. Reply text shown via typewriter poller."""
+        reply_text = ""
         # Fallback: if the reply poller never fired (e.g. server error), show text now.
         if not self._reply_shown:
             try:
@@ -884,13 +982,20 @@ class KidBotGUI:
                     f"{SERVER_URL}/session/{SESSION_ID}/latest_reply", timeout=5,
                 )
                 if r.status_code == 200:
-                    reply = r.json().get("reply", "")
-                    if reply and not self._reply_shown:
-                        self._ui_queue.put(("chat", (BOT_NAME, reply)))
+                    reply_text = r.json().get("reply", "") or ""
+                    if reply_text and not self._reply_shown:
+                        self._ui_queue.put(("chat", (BOT_NAME, reply_text)))
             except Exception:
                 pass
-        self._ui_queue.put(("face_state", "HAPPY"))
-        time.sleep(1.2)
+        # Dispatch CURIOUS if the bot ended on a question — same predicate as
+        # pi_client.main._ends_with_question; inlined here because importing
+        # pi_client.main would spin up GPIO / audio on the dev box.
+        if _ends_with_question(reply_text):
+            self._ui_queue.put(("face_state", "CURIOUS"))
+            time.sleep(2.0)  # CURIOUS_DISPLAY_SECONDS
+        else:
+            self._ui_queue.put(("face_state", "HAPPY"))
+            time.sleep(1.2)
         self._ui_queue.put(("face_state", "IDLE"))
 
     # ------------------------------------------------------------------

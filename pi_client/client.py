@@ -105,6 +105,25 @@ class ServerClient:
         logger.error("Server returned %d: %s", resp.status_code, resp.text)
         return self.error_audio
 
+    def get_latest_reply(self) -> str:
+        """One-shot fetch of the latest streamed reply text (empty if none).
+
+        Used on the Pi to drive the CURIOUS face state when the bot ends a
+        reply with a question. The endpoint clears the value after reading,
+        so there's no risk of replaying a stale reply later.
+        """
+        try:
+            resp = requests.get(
+                f"{SERVER_URL}/session/{self.session_id}/latest_reply",
+                headers=self._headers,
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("reply") or ""
+        except requests.RequestException as exc:
+            logger.warning("Could not fetch latest reply: %s", exc)
+        return ""
+
     def get_latest_image(self) -> tuple[str | None, bool]:
         """Poll the server for an image URL generated during the last exchange.
 
