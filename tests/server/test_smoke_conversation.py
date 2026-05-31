@@ -248,6 +248,46 @@ class TestDetectJudgeModel:
         with patch("requests.get", return_value=self._models_resp([])):
             assert smoke._detect_judge_model() is None
 
+    def test_prefers_production_model_when_loaded(self, smoke):
+        """If the server's LM_STUDIO_MODEL substring-matches a loaded model,
+        prefer it over auto-detect — so the judge runs on the same model
+        serving children, not a weaker one (moondream-2b etc.) loaded
+        alongside."""
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "moondream-2b-2025-04-14"},
+                {"id": "google/gemma-4-e4b"},
+             ])):
+            assert smoke._detect_judge_model() == "google/gemma-4-e4b"
+
+    def test_prod_model_matches_quant_suffix(self, smoke):
+        """LM Studio sometimes lists models with quant suffixes like
+        @q4_k_m. Fuzzy match handles that."""
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "moondream-2b"},
+                {"id": "google/gemma-4-e4b@q4_k_m"},
+             ])):
+            assert smoke._detect_judge_model() == "google/gemma-4-e4b@q4_k_m"
+
+    def test_prod_model_matches_stripped_prefix(self, smoke):
+        """LM Studio may drop the publisher prefix on its end."""
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "gemma-4-e4b"},
+             ])):
+            assert smoke._detect_judge_model() == "gemma-4-e4b"
+
+    def test_falls_back_to_deny_list_when_prod_not_loaded(self, smoke):
+        """Production model not in the list → fall through to the existing
+        chat-model filter rather than failing outright."""
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "qwen2-7b-instruct"},
+             ])):
+            assert smoke._detect_judge_model() == "qwen2-7b-instruct"
+
 
 class TestJudge:
     def _mock_openai_returning(self, content: str):

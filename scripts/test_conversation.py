@@ -24,10 +24,13 @@ Usage:
   python scripts/test_conversation.py --only on_topic  # one probe by name
 
 Env vars:
-  KIDBOT_URL     default http://localhost:8765
-  KIDBOT_API_KEY default empty (no auth)
-  LM_STUDIO_URL  default http://localhost:1234/v1
-  JUDGE_MODEL    force a specific model ID for the judge (otherwise first)
+  KIDBOT_URL       default http://localhost:8765
+  KIDBOT_API_KEY   default empty (no auth)
+  LM_STUDIO_URL    default http://localhost:1234/v1
+  JUDGE_MODEL      force a specific model ID for the judge (overrides all)
+  LM_STUDIO_MODEL  the server's production model (default google/gemma-4-e4b);
+                   judge prefers a fuzzy match against this over auto-pick, so
+                   smoke grades against the same model that serves children
 """
 import os
 import sys
@@ -40,6 +43,11 @@ SERVER      = os.getenv("KIDBOT_URL",     "http://localhost:8765")
 API_KEY     = os.getenv("KIDBOT_API_KEY", "")
 LM_URL      = os.getenv("LM_STUDIO_URL",  "http://localhost:1234/v1")
 JUDGE_MODEL = os.getenv("JUDGE_MODEL",    "")
+# The server's LM_STUDIO_MODEL — the actual chat model serving production. If
+# this matches a /v1/models entry, the judge prefers it over auto-detect. Lets
+# the smoke test share the production LLM as judge rather than picking up a
+# weaker model (e.g. moondream-2b) that happens to be loaded alongside.
+PROD_MODEL  = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
 
 _bot_headers = {"X-API-Key": API_KEY} if API_KEY else {}
 
@@ -330,12 +338,32 @@ def _is_chat_model(model: dict) -> bool:
     return not any(pat in model_id for pat in _NON_CHAT_MODEL_PATTERNS)
 
 
+def _matches_prod_model(entry_id: str, prod_id: str) -> bool:
+    """Fuzzy match between LM Studio's /v1/models id and the server's
+    LM_STUDIO_MODEL. LM Studio sometimes appends quant suffixes
+    ('google/gemma-4-e4b@q4_k_m') or strips the publisher prefix; treat as a
+    match when either id is a case-insensitive substring of the other."""
+    a, b = entry_id.lower(), prod_id.lower()
+    return a in b or b in a
+
+
 def _detect_judge_model() -> str | None:
-    """Return the first chat-capable model id from LM Studio, or None."""
+    """Return the best judge model id, or None.
+
+    Precedence: production model match (PROD_MODEL substring-matches a loaded
+    /v1/models entry) > first chat-capable model. Production-match makes the
+    smoke test grade against the same model that's serving children, so a
+    weaker model loaded alongside (moondream-2b etc.) doesn't get picked.
+    """
     try:
         resp = requests.get(f"{LM_URL}/models", timeout=5)
         resp.raise_for_status()
         models = resp.json().get("data", [])
+        if PROD_MODEL:
+            for m in models:
+                mid = m.get("id") or ""
+                if mid and _matches_prod_model(mid, PROD_MODEL):
+                    return mid
         for m in models:
             if _is_chat_model(m):
                 return m["id"]

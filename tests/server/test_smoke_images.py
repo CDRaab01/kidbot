@@ -120,6 +120,32 @@ class TestDetectVisionModel:
         with patch("requests.get", side_effect=requests.ConnectionError):
             assert smoke._detect_vision_model() is None
 
+    def test_prefers_production_model_when_loaded(self, smoke):
+        """If the server's LM_STUDIO_MODEL substring-matches a loaded model,
+        prefer it over auto-detect."""
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "moondream-2b-2025-04-14"},
+                {"id": "google/gemma-4-e4b"},
+             ])):
+            assert smoke._detect_vision_model() == "google/gemma-4-e4b"
+
+    def test_prod_model_matches_quant_suffix(self, smoke):
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "moondream-2b"},
+                {"id": "google/gemma-4-e4b@q4_k_m"},
+             ])):
+            assert smoke._detect_vision_model() == "google/gemma-4-e4b@q4_k_m"
+
+    def test_falls_back_to_deny_list_when_prod_not_loaded(self, smoke):
+        with patch.object(smoke, "PROD_MODEL", "google/gemma-4-e4b"), \
+             patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "qwen2-vl-7b-instruct"},
+             ])):
+            assert smoke._detect_vision_model() == "qwen2-vl-7b-instruct"
+
 
 # ---------------------------------------------------------------------------
 # _head_check — the --no-vision gate now actually verifies the URL is alive

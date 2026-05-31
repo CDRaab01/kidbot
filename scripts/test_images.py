@@ -33,6 +33,9 @@ SERVER       = os.getenv("KIDBOT_URL",    "http://localhost:8765")
 API_KEY      = os.getenv("KIDBOT_API_KEY", "")
 LM_URL       = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
 VISION_MODEL = os.getenv("VISION_MODEL",  "")
+# The server's LM_STUDIO_MODEL — the actual chat model serving production. If
+# this matches a /v1/models entry, the vision check prefers it over auto-pick.
+PROD_MODEL   = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
 
 _bot_headers = {"X-API-Key": API_KEY} if API_KEY else {}
 
@@ -130,12 +133,31 @@ def _is_chat_model(model: dict) -> bool:
     return not any(pat in model_id for pat in _NON_CHAT_MODEL_PATTERNS)
 
 
+def _matches_prod_model(entry_id: str, prod_id: str) -> bool:
+    """Fuzzy match between LM Studio's /v1/models id and the server's
+    LM_STUDIO_MODEL. LM Studio may append quant suffixes
+    ('google/gemma-4-e4b@q4_k_m') or strip the publisher prefix; treat as a
+    match when either id is a case-insensitive substring of the other."""
+    a, b = entry_id.lower(), prod_id.lower()
+    return a in b or b in a
+
+
 def _detect_vision_model() -> str | None:
-    """Return the first chat-capable model id from LM Studio, or None."""
+    """Return the best vision-check model id, or None.
+
+    Precedence: production model match (PROD_MODEL substring-matches a loaded
+    /v1/models entry) > first chat-capable model. Falls back through the
+    deny-list filter if the prod model isn't loaded.
+    """
     try:
         resp = requests.get(f"{LM_URL}/models", timeout=5)
         resp.raise_for_status()
         models = resp.json().get("data", [])
+        if PROD_MODEL:
+            for m in models:
+                mid = m.get("id") or ""
+                if mid and _matches_prod_model(mid, PROD_MODEL):
+                    return mid
         for m in models:
             if _is_chat_model(m):
                 return m["id"]
