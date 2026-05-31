@@ -66,6 +66,62 @@ class TestQueryKidbotRateLimit:
 
 
 # ---------------------------------------------------------------------------
+# _detect_vision_model — same deny-list fix as test_conversation.py's
+# _detect_judge_model. LM Studio's /v1/models lists image-gen / embedding /
+# audio models alongside chat LLMs; picking the first entry blindly broke
+# when Flux came back first (chat/completions 400).
+# ---------------------------------------------------------------------------
+
+class TestDetectVisionModel:
+    def _models_resp(self, models: list[dict]):
+        r = MagicMock(status_code=200)
+        r.json.return_value = {"data": models}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_skips_flux_image_model(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "gemma-3-4b-it"},
+             ])):
+            assert smoke._detect_vision_model() == "gemma-3-4b-it"
+
+    def test_skips_stable_diffusion(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "stable-diffusion-xl"},
+                {"id": "qwen2-vl-7b-instruct"},
+             ])):
+            assert smoke._detect_vision_model() == "qwen2-vl-7b-instruct"
+
+    def test_skips_embeddings_and_audio(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "nomic-embed-text-v1.5"},
+                {"id": "whisper-large-v3"},
+                {"id": "kokoro-onnx"},
+                {"id": "gemma-3-vision"},
+             ])):
+            assert smoke._detect_vision_model() == "gemma-3-vision"
+
+    def test_respects_explicit_type_metadata(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "custom-encoder-v2", "type": "embeddings"},
+                {"id": "qwen-vl", "type": "llm"},
+             ])):
+            assert smoke._detect_vision_model() == "qwen-vl"
+
+    def test_returns_none_when_all_models_are_non_chat(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "nomic-embed-text-v1.5"},
+             ])):
+            assert smoke._detect_vision_model() is None
+
+    def test_returns_none_on_network_failure(self, smoke):
+        with patch("requests.get", side_effect=requests.ConnectionError):
+            assert smoke._detect_vision_model() is None
+
+
+# ---------------------------------------------------------------------------
 # _head_check — the --no-vision gate now actually verifies the URL is alive
 # ---------------------------------------------------------------------------
 

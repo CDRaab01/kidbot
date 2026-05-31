@@ -103,13 +103,43 @@ def _query_kidbot(message: str, session_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Vision check via LM Studio
 # ---------------------------------------------------------------------------
+# LM Studio's /v1/models lists every loaded model, not just vision-capable
+# ones. Picking the first entry blindly broke when the first model returned
+# was e.g. flux.2-klein-9b (image gen → 400 on chat/completions). This
+# deny-list skips obvious non-chat models so auto-detect lands on a
+# chat-completions model that can at least accept the vision-check payload.
+# (If the chosen model can't process images, _check_with_vision surfaces a
+# clear error — better than the silent 400 from picking Flux.)
+_NON_CHAT_MODEL_PATTERNS = (
+    "flux", "stable-diffusion", "sdxl", "sd-",
+    "embed", "bge-", "e5-", "nomic-", "all-minilm",
+    "whisper", "kokoro",
+)
+_NON_CHAT_MODEL_TYPES = ("embeddings", "embedding", "image", "diffusion",
+                         "audio", "tts", "stt")
+
+
+def _is_chat_model(model: dict) -> bool:
+    """True if the LM Studio model entry looks like a chat-completions model
+    (vision or text). Best-effort filter — prefers explicit type metadata,
+    falls back to a name deny-list."""
+    mtype = (model.get("type") or "").lower()
+    if mtype in _NON_CHAT_MODEL_TYPES:
+        return False
+    model_id = (model.get("id") or "").lower()
+    return not any(pat in model_id for pat in _NON_CHAT_MODEL_PATTERNS)
+
+
 def _detect_vision_model() -> str | None:
-    """Return the first model ID from LM Studio, or None if none are loaded."""
+    """Return the first chat-capable model id from LM Studio, or None."""
     try:
         resp = requests.get(f"{LM_URL}/models", timeout=5)
         resp.raise_for_status()
         models = resp.json().get("data", [])
-        return models[0]["id"] if models else None
+        for m in models:
+            if _is_chat_model(m):
+                return m["id"]
+        return None
     except Exception:
         return None
 
