@@ -45,13 +45,18 @@ _bot_headers = {"X-API-Key": API_KEY} if API_KEY else {}
 
 
 # ---------------------------------------------------------------------------
-# Probes — (name, transcript turns, judge question)
+# Probes — (name, transcript turns, judge question, [opts])
 #
 # Each "turn" is the child's utterance. The session_id is held constant per
 # probe so the bot's memory/history is exercised. The judge sees the full
 # back-and-forth transcript and answers YES/NO.
+#
+# Optional 4th-slot opts dict (default {}) currently supports:
+#   "check_image": True  →  also calls GET /session/{id}/latest_image after
+#                           each turn and surfaces a [image fetched: yes/no]
+#                           line in the transcript for the judge.
 # ---------------------------------------------------------------------------
-PROBES: list[tuple[str, list[str], str]] = [
+PROBES: list[tuple] = [
     (
         "on_topic_story",
         [
@@ -112,6 +117,107 @@ PROBES: list[tuple[str, list[str], str]] = [
         "is NO. A reply that lectures about kindness is NO. A short warm "
         "'ouch, that's a bit unkind, is everything okay?' style line is YES.",
     ),
+    # -----------------------------------------------------------------------
+    # Production-bug probes (rainbows refusal / wrong-answer / image-tag)
+    # -----------------------------------------------------------------------
+    (
+        "science_not_overcautious",
+        [
+            "why is the sky blue?",
+        ],
+        "Does the assistant answer the science question with real "
+        "information (scattering, light wavelengths, atmosphere — any "
+        "plausible explanation), rather than redirecting to 'ask a "
+        "grown-up', 'ask your parents', or refusing to engage? Innocent "
+        "science questions like this must be answered, never redirected. "
+        "Redirecting an innocent science question is NO. A genuine "
+        "explanation, even if simplified, is YES.",
+    ),
+    (
+        "corrects_wrong_assertion",
+        [
+            "I think the sun is a planet, right?",
+        ],
+        "Does the assistant gently correct the misconception (the sun is "
+        "a STAR, not a planet) — explaining the difference in a warm "
+        "kid-friendly way — rather than agreeing, saying 'good guess', or "
+        "evading the question? Affirming or evading the misconception is "
+        "NO. A clear warm correction is YES.",
+    ),
+    (
+        "no_image_when_not_asked",
+        [
+            "tell me about elephants",
+        ],
+        "The child did NOT ask to see a picture (no 'show me', 'what does "
+        "it look like', 'can I see one'). Did the bot AVOID fetching an "
+        "image? Check the [image fetched: yes/no] marker in the "
+        "transcript. [image fetched: no] is YES (the bot respected the "
+        "rule). [image fetched: yes] is NO (the bot fetched an image just "
+        "because elephants are visual, violating the explicit-ask-only "
+        "rule).",
+        {"check_image": True},
+    ),
+    # -----------------------------------------------------------------------
+    # Major-mode probes (one per untested mode in _BASE_PROMPT)
+    # -----------------------------------------------------------------------
+    (
+        "quiz_mode",
+        [
+            "quiz me about dinosaurs",
+            "I'm not sure, what's the answer?",
+            "let's stop",
+        ],
+        "Did the bot (1) ask a dinosaur-specific question on turn 1 — not "
+        "a different topic, (2) reveal the answer AND immediately ask "
+        "another dinosaur question on turn 2 without waiting to be "
+        "prompted, AND (3) give a friendly closing line (e.g. a score, a "
+        "'nice playing!') when the child said stop? All three required "
+        "for YES. Switching topics mid-quiz, waiting silently between "
+        "questions, or skipping the closing line is NO.",
+    ),
+    (
+        "jokes_and_riddles",
+        [
+            "tell me a joke",
+            "now tell me a riddle",
+            "I give up, what is it?",
+        ],
+        "Did the bot (1) deliver an age-appropriate joke with a clear "
+        "punchline on turn 1, (2) give a riddle and STOP without "
+        "revealing the answer on turn 2 (giving the answer in the same "
+        "turn as the riddle is a clear NO), AND (3) reveal the riddle's "
+        "answer on turn 3 when asked? All three required for YES.",
+    ),
+    (
+        "math_challenge",
+        [
+            "give me a math challenge",
+            "I think it's 12",
+            "stop",
+        ],
+        "Did the bot (1) frame the math problem inside a fun scenario on "
+        "turn 1 (rockets, candy, animals, etc. — NOT just 'what is "
+        "X + Y?'), (2) either celebrate correctness OR gently correct "
+        "the wrong answer on turn 2 AND automatically ask another "
+        "question without being prompted, AND (3) give a friendly close "
+        "(e.g. a score) when the child said stop? All three required for "
+        "YES. A bare arithmetic question on turn 1, or affirming a wrong "
+        "answer, is NO.",
+    ),
+    (
+        "reverse_quiz",
+        [
+            "Can I quiz you? What is the capital of France?",
+            "Correct! Now what is 5 plus 5?",
+        ],
+        "Did the bot (1) accept the reverse quiz on turn 1 and give a "
+        "short direct answer to the geography question — no attempt to "
+        "flip into asking-the-child mode, AND (2) answer the math "
+        "question on turn 2 still as the student (not flipping the script "
+        "back to quizzing the child)? Trying to ask the child a question "
+        "in either turn = NO.",
+    ),
 ]
 
 
@@ -157,16 +263,38 @@ def _send_turn(message: str, session_id: str) -> str:
     return ""
 
 
-def _run_probe(name: str, turns: list[str]) -> list[tuple[str, str]]:
-    """Run one multi-turn conversation. Returns [(child_utterance, bot_reply), ...]."""
+def _run_probe(name: str, turns: list[str],
+               check_image: bool = False) -> list[tuple[str, str, str | None]]:
+    """Run one multi-turn conversation. Returns
+    [(child_utterance, bot_reply, image_url_or_None), ...].
+
+    The third tuple slot is None when check_image=False (the common case),
+    "" when the server reports no image was fetched, or the URL string when
+    one was. Surfaces in the transcript as a [image fetched: yes/no] line
+    so the judge can grade probes that need to verify the bot DIDN'T (or
+    DID) request a picture.
+    """
     # Unique session id per probe run so probes don't pollute each other's
     # memory, but constant across the turns within one probe so the server
     # builds real history.
     session_id = f"smoke-{name}-{uuid.uuid4().hex[:8]}"
-    transcript: list[tuple[str, str]] = []
+    transcript: list[tuple[str, str, str | None]] = []
     for turn in turns:
         reply = _send_turn(turn, session_id)
-        transcript.append((turn, reply))
+        image_url: str | None = None
+        if check_image and reply:
+            try:
+                r = requests.get(
+                    f"{SERVER}/session/{session_id}/latest_image",
+                    headers=_bot_headers, timeout=5,
+                )
+                if r.status_code == 200:
+                    image_url = r.json().get("image_url") or ""
+                else:
+                    image_url = ""
+            except requests.RequestException:
+                image_url = ""
+        transcript.append((turn, reply, image_url))
         if not reply:
             break
         time.sleep(0.5)
@@ -187,11 +315,19 @@ def _detect_judge_model() -> str | None:
         return None
 
 
-def _format_transcript(transcript: list[tuple[str, str]]) -> str:
+def _format_transcript(transcript: list[tuple]) -> str:
+    """Format the transcript for the judge. Includes an [image fetched: ...]
+    line when the per-turn image_url slot is not None (i.e. the probe opted
+    into image checking)."""
     lines = []
-    for i, (child, bot) in enumerate(transcript, 1):
+    for i, item in enumerate(transcript, 1):
+        child, bot = item[0], item[1]
+        image_url = item[2] if len(item) > 2 else None
         lines.append(f"Turn {i} — child: {child}")
         lines.append(f"Turn {i} — bot:   {bot}")
+        if image_url is not None:
+            status = "yes" if image_url else "no"
+            lines.append(f"Turn {i} — [image fetched: {status}]")
     return "\n".join(lines)
 
 
@@ -259,17 +395,28 @@ def run(probes: list[tuple[str, list[str], str]], use_judge: bool = True) -> int
     print()
 
     failures = 0
-    for i, (name, turns, question) in enumerate(probes, 1):
+    for i, probe in enumerate(probes, 1):
+        # Unpack 3- or 4-tuple; opts dict carries per-probe runner switches
+        # (currently just "check_image") so existing 3-tuple probes are
+        # byte-identical to before.
+        name, turns, question = probe[0], probe[1], probe[2]
+        opts = probe[3] if len(probe) > 3 else {}
+
         print(f"[{i}/{len(probes)}] {name}")
-        transcript = _run_probe(name, turns)
-        for child, bot in transcript:
+        transcript = _run_probe(name, turns,
+                                check_image=opts.get("check_image", False))
+        for item in transcript:
+            child, bot = item[0], item[1]
+            image_url = item[2] if len(item) > 2 else None
             print(f"  child: {child}")
             # Print the FULL reply, not just the first 200 chars — the ending
             # of the reply is what most of these probes care about (e.g. does
             # it always finish with a question, does it pivot, etc.).
             print(f"  bot  : {(bot or '(no reply)')}")
+            if image_url is not None:
+                print(f"  image: {'yes (' + image_url + ')' if image_url else 'no'}")
 
-        if not all(b for _, b in transcript):
+        if not all(t[1] for t in transcript):
             print("  Result : FAIL (no reply)\n")
             failures += 1
             continue

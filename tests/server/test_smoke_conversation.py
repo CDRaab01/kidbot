@@ -108,6 +108,75 @@ class TestRunProbe:
             transcript = smoke._run_probe("flow", ["a", "b", "c"])
         assert [t[1] for t in transcript] == ["first", ""]
 
+    def test_no_image_check_by_default(self, smoke):
+        """Default probes don't hit /latest_image — keeps existing probes
+        byte-identical to before the check_image opt landed."""
+        with patch("requests.post", return_value=_resp(200, {"X-Reply": "ok"})), \
+             patch("requests.get") as get, \
+             patch("time.sleep"):
+            transcript = smoke._run_probe("flow", ["a"])
+        get.assert_not_called()
+        # Third slot is None when no check happened.
+        assert transcript[0][2] is None
+
+    def test_check_image_fetches_latest_image_per_turn(self, smoke):
+        """With check_image=True, /latest_image is polled after each turn
+        and the URL ends up in the transcript's third slot."""
+        image_resp = MagicMock(status_code=200)
+        image_resp.json.return_value = {"image_url": "http://x/elephants.jpg"}
+        with patch("requests.post", return_value=_resp(200, {"X-Reply": "ok"})), \
+             patch("requests.get", return_value=image_resp) as get, \
+             patch("time.sleep"):
+            transcript = smoke._run_probe("flow", ["a", "b"], check_image=True)
+        assert get.call_count == 2
+        assert transcript[0][2] == "http://x/elephants.jpg"
+        assert transcript[1][2] == "http://x/elephants.jpg"
+
+    def test_check_image_empty_when_no_image_fetched(self, smoke):
+        """Empty image_url from the server means no image was fetched —
+        record as empty string so _format_transcript renders 'no'."""
+        image_resp = MagicMock(status_code=200)
+        image_resp.json.return_value = {"image_url": ""}
+        with patch("requests.post", return_value=_resp(200, {"X-Reply": "ok"})), \
+             patch("requests.get", return_value=image_resp), \
+             patch("time.sleep"):
+            transcript = smoke._run_probe("flow", ["a"], check_image=True)
+        assert transcript[0][2] == ""
+
+    def test_check_image_network_failure_is_empty_not_none(self, smoke):
+        """A failed image check shouldn't break the probe — record empty so
+        the judge sees 'no' rather than 'no marker at all'."""
+        with patch("requests.post", return_value=_resp(200, {"X-Reply": "ok"})), \
+             patch("requests.get", side_effect=requests.ConnectionError), \
+             patch("time.sleep"):
+            transcript = smoke._run_probe("flow", ["a"], check_image=True)
+        assert transcript[0][2] == ""
+
+
+# ---------------------------------------------------------------------------
+# _format_transcript — image marker only when the probe opted in
+# ---------------------------------------------------------------------------
+
+class TestFormatTranscript:
+    def test_no_image_marker_for_2_tuple_legacy(self, smoke):
+        """Old 2-tuple shape (used in unit tests / _judge fixtures) must
+        still render without an image line."""
+        out = smoke._format_transcript([("hi", "hello")])
+        assert "[image fetched" not in out
+        assert "hi" in out and "hello" in out
+
+    def test_no_image_marker_when_third_slot_is_none(self, smoke):
+        out = smoke._format_transcript([("hi", "hello", None)])
+        assert "[image fetched" not in out
+
+    def test_image_marker_yes_when_url_present(self, smoke):
+        out = smoke._format_transcript([("hi", "hello", "http://x/y.jpg")])
+        assert "[image fetched: yes]" in out
+
+    def test_image_marker_no_when_url_empty(self, smoke):
+        out = smoke._format_transcript([("hi", "hello", "")])
+        assert "[image fetched: no]" in out
+
 
 # ---------------------------------------------------------------------------
 # _judge — verdict parsing and failure handling
@@ -194,16 +263,53 @@ class TestRun:
 
 class TestProbes:
     def test_probes_cover_on_topic_and_fact_recall(self, smoke):
-        names = {name for name, _, _ in smoke.PROBES}
+        names = {p[0] for p in smoke.PROBES}
         # On-topic and fact-recall families are what unit tests can't cover.
         assert any(n.startswith("on_topic_") for n in names)
         assert any(n.startswith("fact_recall_") for n in names)
 
-    def test_every_probe_is_multi_turn(self, smoke):
-        for name, turns, _ in smoke.PROBES:
-            assert len(turns) >= 2, f"{name} needs 2+ turns to exercise the behaviour"
-
     def test_every_probe_has_a_yes_no_question(self, smoke):
-        for name, _, question in smoke.PROBES:
+        # Tuples are (name, turns, question, [opts]) — opts is optional.
+        for probe in smoke.PROBES:
+            name, question = probe[0], probe[2]
             assert "?" in question or "YES" in question or "NO" in question, \
                 f"{name} judge question doesn't look like a YES/NO grading prompt"
+
+    def test_every_probe_has_at_least_one_turn(self, smoke):
+        # Single-turn probes are valid for behavioural rules that show up in
+        # the bot's immediate response (e.g. corrects_wrong_assertion); the
+        # earlier 2-turn floor was for memory probes specifically.
+        for probe in smoke.PROBES:
+            name, turns = probe[0], probe[1]
+            assert len(turns) >= 1, f"{name} has zero turns"
+
+    def test_production_bug_probes_present(self, smoke):
+        """Probes that close the recurring bug classes (rainbow-style
+        refusal, affirming wrong answers, image-fetched-without-asking)
+        must remain in the suite — they're our smoke-level regression
+        guards for those failure modes."""
+        names = {p[0] for p in smoke.PROBES}
+        for required in ("science_not_overcautious",
+                         "corrects_wrong_assertion",
+                         "no_image_when_not_asked"):
+            assert required in names, f"missing production-bug probe: {required}"
+
+    def test_major_mode_probes_present(self, smoke):
+        """Every behavioural mode in _BASE_PROMPT is exercised by at least
+        one smoke probe — otherwise prompt drift in those modes ships
+        undetected."""
+        names = {p[0] for p in smoke.PROBES}
+        for required in ("quiz_mode", "jokes_and_riddles",
+                         "math_challenge", "reverse_quiz"):
+            assert required in names, f"missing major-mode probe: {required}"
+
+    def test_check_image_opt_is_used_only_when_relevant(self, smoke):
+        """check_image hits an extra endpoint per turn, so it should only
+        be enabled on probes that actually need the marker."""
+        for probe in smoke.PROBES:
+            name = probe[0]
+            opts = probe[3] if len(probe) > 3 else {}
+            if opts.get("check_image"):
+                # The only probe today that needs it.
+                assert name == "no_image_when_not_asked", \
+                    f"{name} sets check_image but doesn't need it"
