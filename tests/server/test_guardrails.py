@@ -101,6 +101,13 @@ class TestGetSystemPrompt:
     def test_reverse_quiz_instructs_bot_to_answer_not_ask(self):
         assert "answering seat" in _BASE_PROMPT
 
+    def test_reverse_quiz_forbids_trailing_questions(self):
+        """The model interpreted 'never seize the question-asking role' as
+        only forbidding actual quiz questions back, so it kept appending
+        meta-asides ('what else?', 'are we sticking with math?'). The
+        explicit anti-trailing-question rule locks down that loophole."""
+        assert "Do NOT end your answer with a question" in _BASE_PROMPT
+
     def test_math_mode_instructs_work_out_answer_first(self):
         assert "work out the correct answer" in _BASE_PROMPT
 
