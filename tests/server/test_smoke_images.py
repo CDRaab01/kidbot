@@ -63,3 +63,205 @@ class TestQueryKidbotRateLimit:
         ok = _resp(200, {"X-Reply": "a reply", "X-Image-Url": "http://img"})
         with patch("requests.post", return_value=ok):
             assert smoke._query_kidbot("hi", "s1") == ("a reply", "http://img")
+
+
+# ---------------------------------------------------------------------------
+# _detect_vision_model — same deny-list fix as test_conversation.py's
+# _detect_judge_model. LM Studio's /v1/models lists image-gen / embedding /
+# audio models alongside chat LLMs; picking the first entry blindly broke
+# when Flux came back first (chat/completions 400).
+# ---------------------------------------------------------------------------
+
+class TestDetectVisionModel:
+    def _models_resp(self, models: list[dict]):
+        r = MagicMock(status_code=200)
+        r.json.return_value = {"data": models}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_skips_flux_image_model(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "gemma-3-4b-it"},
+             ])):
+            assert smoke._detect_vision_model() == "gemma-3-4b-it"
+
+    def test_skips_stable_diffusion(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "stable-diffusion-xl"},
+                {"id": "qwen2-vl-7b-instruct"},
+             ])):
+            assert smoke._detect_vision_model() == "qwen2-vl-7b-instruct"
+
+    def test_skips_embeddings_and_audio(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "nomic-embed-text-v1.5"},
+                {"id": "whisper-large-v3"},
+                {"id": "kokoro-onnx"},
+                {"id": "gemma-3-vision"},
+             ])):
+            assert smoke._detect_vision_model() == "gemma-3-vision"
+
+    def test_respects_explicit_type_metadata(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "custom-encoder-v2", "type": "embeddings"},
+                {"id": "qwen-vl", "type": "llm"},
+             ])):
+            assert smoke._detect_vision_model() == "qwen-vl"
+
+    def test_returns_none_when_all_models_are_non_chat(self, smoke):
+        with patch("requests.get", return_value=self._models_resp([
+                {"id": "flux.2-klein-9b"},
+                {"id": "nomic-embed-text-v1.5"},
+             ])):
+            assert smoke._detect_vision_model() is None
+
+    def test_returns_none_on_network_failure(self, smoke):
+        with patch("requests.get", side_effect=requests.ConnectionError):
+            assert smoke._detect_vision_model() is None
+
+
+# ---------------------------------------------------------------------------
+# _head_check — the --no-vision gate now actually verifies the URL is alive
+# ---------------------------------------------------------------------------
+
+class TestHeadCheck:
+    def test_200_with_image_content_type_is_ok(self, smoke):
+        r = MagicMock(status_code=200,
+                      headers={"Content-Type": "image/jpeg"})
+        with patch("requests.head", return_value=r):
+            ok, explanation = smoke._head_check("http://x/cat.jpg")
+        assert ok is True
+        assert "image/jpeg" in explanation
+
+    def test_handles_content_type_with_charset_suffix(self, smoke):
+        # Some CDNs append "; charset=binary" — strip before matching.
+        r = MagicMock(status_code=200,
+                      headers={"Content-Type": "image/png; charset=binary"})
+        with patch("requests.head", return_value=r):
+            ok, _ = smoke._head_check("http://x/p.png")
+        assert ok is True
+
+    def test_404_is_failure(self, smoke):
+        r = MagicMock(status_code=404, headers={})
+        with patch("requests.head", return_value=r):
+            ok, explanation = smoke._head_check("http://x/dead.jpg")
+        assert ok is False
+        assert "404" in explanation
+
+    def test_html_response_is_failure(self, smoke):
+        # A 200 HTML "image removed" page should fail the gate — the URL is
+        # technically alive but the Pi can't display it.
+        r = MagicMock(status_code=200,
+                      headers={"Content-Type": "text/html; charset=utf-8"})
+        with patch("requests.head", return_value=r):
+            ok, explanation = smoke._head_check("http://x/removed")
+        assert ok is False
+        assert "not an image" in explanation
+
+    def test_missing_content_type_is_failure(self, smoke):
+        r = MagicMock(status_code=200, headers={})
+        with patch("requests.head", return_value=r):
+            ok, explanation = smoke._head_check("http://x/y")
+        assert ok is False
+        assert "unknown" in explanation
+
+    def test_network_failure_is_failure(self, smoke):
+        with patch("requests.head", side_effect=requests.ConnectionError):
+            ok, explanation = smoke._head_check("http://x/y.jpg")
+        assert ok is False
+        assert "HEAD failed" in explanation
+
+    def test_follows_redirects(self, smoke):
+        with patch("requests.head") as head:
+            head.return_value = MagicMock(status_code=200,
+                                          headers={"Content-Type": "image/jpeg"})
+            smoke._head_check("http://x/redirected")
+        # Important: many Wikimedia / NASA URLs 302 to a CDN. allow_redirects
+        # is the difference between PASS and bogus FAIL on those.
+        assert head.call_args.kwargs.get("allow_redirects") is True
+
+
+# ---------------------------------------------------------------------------
+# run_dedup_check — exclude_urls smoke coverage
+# ---------------------------------------------------------------------------
+
+class TestRunDedupCheck:
+    def test_different_urls_passes(self, smoke):
+        with patch.object(smoke, "_query_kidbot", side_effect=[
+                ("ok", "http://x/elephant1.jpg"),
+                ("ok", "http://x/elephant2.jpg"),
+             ]), patch("time.sleep"):
+            assert smoke.run_dedup_check() == 0
+
+    def test_duplicate_url_fails(self, smoke):
+        with patch.object(smoke, "_query_kidbot", side_effect=[
+                ("ok", "http://x/elephant.jpg"),
+                ("ok", "http://x/elephant.jpg"),  # exclude_urls didn't work
+             ]), patch("time.sleep"):
+            assert smoke.run_dedup_check() == 1
+
+    def test_first_request_returns_no_url(self, smoke):
+        with patch.object(smoke, "_query_kidbot", side_effect=[
+                ("oops", ""),
+             ]), patch("time.sleep"):
+            assert smoke.run_dedup_check() == 1
+
+    def test_second_request_returns_no_url(self, smoke):
+        with patch.object(smoke, "_query_kidbot", side_effect=[
+                ("ok", "http://x/elephant.jpg"),
+                ("oops", ""),
+             ]), patch("time.sleep"):
+            assert smoke.run_dedup_check() == 1
+
+    def test_session_id_constant_across_both_requests(self, smoke):
+        seen: list[str] = []
+
+        def fake_query(message, session_id):
+            seen.append(session_id)
+            return "ok", f"http://x/{len(seen)}.jpg"
+
+        with patch.object(smoke, "_query_kidbot", side_effect=fake_query), \
+             patch("time.sleep"):
+            smoke.run_dedup_check()
+        # Both requests must use the same session_id — otherwise the server
+        # wouldn't have URL #1 in the session's exclude list when URL #2 is
+        # requested, defeating the test entirely.
+        assert len(seen) == 2 and seen[0] == seen[1]
+
+
+# ---------------------------------------------------------------------------
+# run() — --no-vision branch now wraps HEAD check, not blind PASS
+# ---------------------------------------------------------------------------
+
+class TestRunNoVisionBranch:
+    _one_test = [("show me a picture of a cat", "a cat")]
+
+    def test_alive_url_passes(self, smoke):
+        with patch.object(smoke, "_query_kidbot",
+                          return_value=("ok", "http://x/cat.jpg")), \
+             patch.object(smoke, "_head_check",
+                          return_value=(True, "reachable image/jpeg")), \
+             patch("time.sleep"):
+            failures = smoke.run(self._one_test, use_vision=False)
+        assert failures == 0
+
+    def test_dead_url_fails(self, smoke):
+        with patch.object(smoke, "_query_kidbot",
+                          return_value=("ok", "http://x/dead.jpg")), \
+             patch.object(smoke, "_head_check",
+                          return_value=(False, "HTTP 404")), \
+             patch("time.sleep"):
+            failures = smoke.run(self._one_test, use_vision=False)
+        assert failures == 1
+
+    def test_no_url_returned_still_counts_as_one_failure(self, smoke):
+        # The blind "URL returned at all" check is the FIRST gate; HEAD is the
+        # second. Ensure they don't double-count when the URL itself is empty.
+        with patch.object(smoke, "_query_kidbot",
+                          return_value=("ok", "")), \
+             patch.object(smoke, "_head_check") as head, \
+             patch("time.sleep"):
+            failures = smoke.run(self._one_test, use_vision=False)
+        assert failures == 1
+        head.assert_not_called()  # didn't fall through to the HEAD branch
