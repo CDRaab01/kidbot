@@ -212,9 +212,12 @@ def _render_face(state: str, frame: int, battery: Optional[int]) -> "PIL.Image.I
         _draw_thinking_dots(draw, cx, cy + 55, frame)
 
     elif state == "IMAGE_MISSING":
-        # Warmer than ERROR — a small apologetic face, not a crash icon.
-        _draw_idle_eyes(draw, leye_x, reye_x, eye_y, frame)
-        _draw_mouth_flat(draw, cx, cy + 30)
+        # Distinct from IDLE: pupils look down (searching, didn't find it),
+        # sad slanted eyebrows, soft frown. Reads as apologetic — "I tried
+        # but couldn't find a picture."
+        _draw_searching_eyes(draw, leye_x, reye_x, eye_y)
+        _draw_eyebrows_sad(draw, leye_x, reye_x, eye_y)
+        _draw_mouth_frown(draw, cx, cy + 30)
 
     elif state == "CURIOUS":
         # Pupils offset to one side + one eyebrow lifted — reads as "hm?".
@@ -303,6 +306,29 @@ def _draw_curious_eyes(draw, lx, rx, y):
                      outline=EYE_HILIGHT, width=1)
         draw.ellipse([ex - 8 + pupil_offset, y - 8,
                       ex + 8 + pupil_offset, y + 8], fill=PUPIL)
+
+
+def _draw_searching_eyes(draw, lx, rx, y):
+    """Open eyes with pupils dropped low — the universal 'looked around and
+    didn't find it' look. Used for IMAGE_MISSING."""
+    r = 22
+    pupil_drop = 8  # px below centre
+    for ex in (lx, rx):
+        draw.ellipse([ex - r, y - r, ex + r, y + r], outline=EYE_COLOR, width=3)
+        draw.ellipse([ex - r + 2, y - r + 2, ex + r - 2, y + r - 2],
+                     outline=EYE_HILIGHT, width=1)
+        draw.ellipse([ex - 8, y - 8 + pupil_drop,
+                      ex + 8, y + 8 + pupil_drop], fill=PUPIL)
+
+
+def _draw_eyebrows_sad(draw, lx, rx, ey):
+    """Inner-corners raised, outer-corners drooping — sad/apologetic brows
+    (the universal '/  \\' shape, mirrored)."""
+    by = ey - 36
+    # Left eyebrow: outer end low, inner end high
+    draw.line([lx - 18, by + 4, lx + 14, by - 6], fill=BROW_COLOR, width=3)
+    # Right eyebrow: inner end high, outer end low (mirror)
+    draw.line([rx - 14, by - 6, rx + 18, by + 4], fill=BROW_COLOR, width=3)
 
 
 def _draw_bored_eyes(draw, lx, rx, y, frame):
