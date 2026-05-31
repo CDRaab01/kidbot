@@ -71,6 +71,25 @@ class TestGetSystemPrompt:
         assert _BASE_PROMPT in p1
         assert _BASE_PROMPT in p2
 
+    def test_handles_unkind_words_rule_present(self):
+        """The 'defend itself a little' rule for personal insults must be in
+        the prompt — drives the warm-but-firm response to 'I hate you' /
+        'you're stupid' / etc. Asserts the rule, at least two of the example
+        insults the model is told to recognise, and the do-not list."""
+        prompt = get_system_prompt()
+        # The rule itself
+        assert "unkind" in prompt.lower()
+        # Example insults the model should recognise
+        assert "I hate you" in prompt
+        assert "you're stupid" in prompt
+        # The example responses (few-shot anchors)
+        assert "Ouch" in prompt
+        # The do-not list — guards against the model defaulting to apology
+        assert "NEVER apologise" in prompt
+        assert "NEVER lecture" in prompt
+        # The boundary between "insulting the bot" and "frustration at the world"
+        assert "broccoli" in prompt or "homework" in prompt
+
     def test_prompt_instructs_verify_before_praising(self):
         """Prompt must tell the model to check correctness before affirming."""
         assert "verify" in _BASE_PROMPT.lower() or "never affirm a wrong answer" in _BASE_PROMPT.lower()
